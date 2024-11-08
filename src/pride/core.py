@@ -138,7 +138,7 @@ class Scan:
             else:
                 log.warning(f"Bad step size for scan {self.id}: Using nearest integer")
                 facs = self.factors(int(duration))
-                pos = max(0, np.searchsorted(facs, _step) - 1)
+                pos = max(0, int(np.searchsorted(facs, _step)) - 1)
                 step = datetime.timedelta(seconds=facs[pos])
                 nobs = int(duration / step.total_seconds()) + 1
 
