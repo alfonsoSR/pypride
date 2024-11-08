@@ -409,10 +409,14 @@ class Experiment:
     :param setup: Delay calculation setup
     """
 
-    def __init__(self, setup: str | Path) -> None:
+    def __init__(
+        self, setup: str | Path, observations: bool = False, delays: bool = False
+    ) -> None:
         """Initialize experiment from VEX and configuration files
 
         :param setup: Path to setup file
+        :param observations: Add observations during initialization
+        :param delays: Add delays during initialization
         """
 
         # Parse VEX and configuration
@@ -492,10 +496,60 @@ class Experiment:
             )
 
         # Load sources
-        self.sources = {s: Source.from_vex(s, _vex) for s in _vex["SOURCE"]}
+        self.sources: dict[str, Source] = {
+            s: Source.from_vex(s, _vex) for s in _vex["SOURCE"]
+        }
+
+        # Initialize optional attributes
+        setattr(self, "__observations", None)
+        setattr(self, "__delays", None)
+
+        # Resources
+        self.resources: dict[str, Any] = {}
+        self.requires_spice: bool = False
+
+        # Alternative options for initialization
+        if observations:
+            self.add_observations()
+        if delays:
+            self.add_delays()
+
+        return None
+
+    @property
+    def observations(self) -> list["Observation"]:
+        if getattr(self, "__observations") is None:
+            log.error(f"Observations not loaded for {self.name} experiment")
+            exit(1)
+        return getattr(self, "__observations")
+
+    @observations.setter
+    def observations(self, value: list["Observation"]) -> None:
+        setattr(self, "__observations", value)
+        return None
+
+    @property
+    def delays(self) -> list["Delay"]:
+        if getattr(self, "__delays") is None:
+            log.error(f"Delays not loaded for {self.name} experiment")
+            exit(1)
+        return getattr(self, "__delays")
+
+    @delays.setter
+    def delays(self, value: list["Delay"]) -> None:
+        setattr(self, "__delays", value)
+        return None
+
+    def add_observations(self) -> None:
+
+        log.info(f"Adding observations to {self.name} experiment")
+
+        # TEMPORARY FIX: Reload VEX file to avoid creating property
+        vex = self.setup.general["vex"]
+        _vex = Vex(vex) if isinstance(vex, str) else Vex(str(vex))
 
         # Initialize observations for all the baselines
-        self.observations: list[Observation] = []
+        self.observations = []
         for _source in self.sources.values():
             for _station in self.stations.values():
                 self.observations.append(
@@ -557,8 +611,14 @@ class Experiment:
         # Remove empty observations
         self.observations = [obs for obs in self.observations if not obs.empty]
 
+        return None
+
+    def add_delays(self) -> None:
+
+        log.info(f"Adding delays to {self.name} experiment")
+
         # Initialize list of delays
-        self.delays: list["Delay"] = []
+        self.delays = []
         self.requires_spice: bool = False
         for key, delay_config in self.setup.delays.items():
             if delay_config["calculate"]:
@@ -572,10 +632,10 @@ class Experiment:
                 if DELAY_MODELS[key].requires_spice:
                     self.requires_spice = True
 
+        log.info(f"Using: {' '.join([delay.name for delay in self.delays])}")
+
         # Update experiment with resources
-        self.resources: dict[str, Any] = {
-            delay.name: delay.load_resources() for delay in self.delays
-        }
+        self.resources = {delay.name: delay.load_resources() for delay in self.delays}
 
         return None
 

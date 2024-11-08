@@ -24,7 +24,7 @@ class Delay:
 
         # Ensure resources required to calculate delays
         self.ensure_resources()
-        log.info(f"Resources for {self.name} delay are present")
+        log.debug(f"Resources for {self.name} delay are present")
 
         return None
 
@@ -35,7 +35,7 @@ class Delay:
 
     def load_resources(self) -> dict[str, Any]:
 
-        log.info(f"Loading resources for {self.name} delay")
+        log.debug(f"Loading resources for {self.name} delay")
         return self._load_resources()
 
     @abstractmethod
