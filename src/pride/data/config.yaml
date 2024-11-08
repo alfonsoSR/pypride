@@ -1,0 +1,10 @@
+Catalogues:
+  # Station positions (compatible with calc and vtd)
+  station_positions: glo.sit
+  # Station velocities (compatible with calc and vtd)
+  station_velocities: glo.vel
+  # Thermal deformation and axis data for antennas
+  antenna_parameters: antenna-info.txt
+  # Ocean loading parameters for stations
+  ocean_loading: tpxo72.blq
+  # Directory with spacecraft ephemerides
