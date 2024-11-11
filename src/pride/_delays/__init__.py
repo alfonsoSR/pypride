@@ -1,7 +1,8 @@
-from .core import Delay
+raise DeprecationWarning("Deprecated module kept for reference during development")
+
 from .models import Geometric, Tropospheric, Ionospheric, ThermalDeformation
 
-DELAY_MODELS: dict[str, type["Delay"]] = {
+DELAY_MODELS = {
     Geometric.name: Geometric,
     Tropospheric.name: Tropospheric,
     Ionospheric.name: Ionospheric,
@@ -9,7 +10,6 @@ DELAY_MODELS: dict[str, type["Delay"]] = {
 }
 
 __all__ = [
-    "Delay",
     "DELAY_MODELS",
     "Geometric",
     "Tropospheric",

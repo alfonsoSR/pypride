@@ -1,3 +1,5 @@
+raise DeprecationWarning("Deprecated module kept for reference during development")
+
 from .io import Setup, VexContent, Vex, VEX_DATE_FORMAT, load_catalog, internal_file
 from .logger import log
 from typing import Any, TYPE_CHECKING, Generator

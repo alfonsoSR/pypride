@@ -1,47 +1,63 @@
 from .core import Delay
-from ..io import get_target_information, ESA_SPICE, NASA_SPICE, internal_file
+from ..io import load_catalog, ESA_SPICE, NASA_SPICE, internal_file
 from typing import TYPE_CHECKING, Any
 from ..logger import log
 import requests
 from astropy import time
-from ftplib import FTP_TLS
+from pathlib import Path
 import unlzw3
+from ftplib import FTP_TLS
 import gzip
 import numpy as np
 from scipy import interpolate
 from ..types import Antenna
 
 if TYPE_CHECKING:
-    from pathlib import Path
-    from ..experiment.core import Station
+    from ..core import Experiment, Observation, Station
 
 
 class Geometric(Delay):
-    """Geometric delay"""
 
-    name = "Geometric"
-    etc = {}
-    requires_spice = True
-    station_specific = False
+    name: str = "Geometric"
+    key: str = "geo"
+    requires_spice: bool = True
 
     def ensure_resources(self) -> None:
+        """Required resources for geometric delay
+
+        - SPICE kernels for target spacecraft
+        """
+
+        # Get target information from spacecraft catalog
+        _catalog = load_catalog("spacecraft.yaml")
+        _sc = str(self.exp.setup.general["target"]).upper()
+        target: dict[str, Any] | None = None
+        for _target in _catalog.values():
+            if _sc in _target["names"]:
+                target = _target
+                break
+        if target is None:
+            log.error(
+                f"Failed to acquire resources for {self.name} delay: "
+                f"Target {_sc} not found in spacecraft catalog"
+            )
+            exit(1)
 
         # Find kernels for target
-        target = get_target_information(self.exp.setup.general["target"])
-        kernel_path: "Path" = self.config["data"] / target["short_name"]
-        metak_path: "Path" = kernel_path / "metak.tm"
+        kernel_path = self.config["data"] / target["short_name"]
+        metak_path = kernel_path / "metak.tm"
         kernel_source = ESA_SPICE if target["api"] == "ESA" else NASA_SPICE
         kernel_source += f"/{target['names'][-1]}/kernels"
 
-        # Create kernel directory if not present
+        # Create directory for kernels if not present
         if not kernel_path.exists():
-            kernel_path.mkdir(parents=True)
+            kernel_path.mkdir(parents=True, exist_ok=True)
             log.info(f"Created kernel directory for {target['names'][-1]}")
 
         # Download metakernel if not present
         if not metak_path.exists():
-            log.info(f"Downloading metakernel for {target['names'][-1]}")
-            metak_found: bool = False
+            log.info(f"Downloading default metakernel for {target['names'][-1]}")
+            metak_found = False
             response = requests.get(
                 f"{kernel_source}/mk/{target['meta_kernel'].upper()}"
             )
@@ -52,15 +68,15 @@ class Geometric(Delay):
                     for line in metak_content:
                         if "PATH_VALUES" in line:
                             line = line.replace("..", str(kernel_path))
-                        f.write(f"{line}\n")
+                        f.write(line + "\n")
             if not metak_found:
                 log.error(
                     "Failed to initialize geometric delay: "
-                    f"Metakernel not found for {target['names'][-1]}"
+                    f"Meta kernel {target['meta_kernel']} not found in server"
                 )
                 exit(1)
 
-        # Read list of kernels from metakernel
+        # Read list of kernels from meta kernel
         klist: list[str] = []
         with metak_path.open() as metak:
             content = iter([line.strip() for line in metak.readlines()])
@@ -92,31 +108,22 @@ class Geometric(Delay):
 
         return None
 
-    def load_resources(self) -> dict[str, Any]:
+    def _load_resources(self) -> dict[str, Any]:
+
         return {}
 
 
 class Tropospheric(Delay):
-    """Tropospheric delay
+    """Tropospheric delay"""
 
-    # Available models
-    ## Petrov
-    - BRIEF DESCRIPTION OF THE MODEL AND SOURCE
-    - DESCRIPTION OF REQUIRED RESOURCES AND KEYS
-
-    ## Vienna Mapping Function 3 (VMF3)
-    - BRIEF DESCRIPTION OF THE MODEL AND SOURCE
-    - DESCRIPTION OF REQUIRED RESOURCES AND KEYS
-    """
-
-    name = "Tropospheric"
-    etc = {
+    name: str = "Tropospheric"
+    etc: dict[str, Any] = {
         "petrov_url": "http://pathdelay.net/spd/asc/geosfpit",
         "vienna_url": "https://vmf.geo.tuwien.ac.at/trop_products",
     }
+    key: str = "tropo"
     models: list[str] = ["petrov", "vienna"]
-    requires_spice = False
-    station_specific = True
+    requires_spice: bool = False
 
     def ensure_resources(self) -> None:
 
@@ -124,22 +131,20 @@ class Tropospheric(Delay):
         if self.config["model"] not in self.models:
             log.error(
                 "Failed to initialize tropospheric delay: "
-                f"Invalid model {self.config['model']}"
+                f"Invalid tropospheric model {self.config['model']}"
             )
             exit(1)
         getattr(self, f"ensure_resources_{self.config['model']}")()
 
-        # No further action if backup model is not enabled
+        # Ensure resources for backup tropospheric model
         if not self.config["backup"]:
             return None
 
-        # Ensure resources for backup model
         if self.config["backup_model"] not in self.models:
             log.error(
-                "Failed to initialize tropospheric delay: "
-                f"Invalid backup model {self.config['backup_model']}"
+                "Failed to initialize backup tropospheric delay: "
+                f"Invalid tropospheric model {self.config['backup_model']}"
             )
-            exit(1)
         getattr(self, f"ensure_resources_{self.config['backup_model']}")()
 
         return None
@@ -276,50 +281,6 @@ class Tropospheric(Delay):
         self.resources["coverage_vienna_site"] = site_coverage
         self.resources["coverage_vienna_grid"] = grid_coverage
 
-    def load_resources(self) -> dict[str, tuple[str, Any]]:
-
-        resources: dict[str, tuple[str, Any]] = {}
-
-        for baseline in self.exp.baselines:
-
-            # Check if resources are already available for station
-            station = baseline.station
-            if station.name in resources:
-                continue
-
-            # Attempt to load resources for main model
-            success: bool = True
-            try:
-                resources_main = getattr(
-                    self, f"load_resources_{self.config['model']}"
-                )(station)
-            except ValueError as e:
-                if f"Station {station.name} not found" not in str(e):
-                    raise e
-                success = False
-
-            # If successful, add resources to dictionary
-            if success:
-                resources[station.name] = (self.config["model"], resources_main)
-                continue
-
-            # Raise error if backup model is not enabled
-            if not self.config["backup"]:
-                log.error(
-                    f"Failed to load resources for tropospheric delay: "
-                    f"Station {station.name} not found in {self.config['model']} data"
-                )
-                exit(1)
-
-            # Attempt to load resources for backup model
-            log.warning(f"Using backup tropospheric model for {station.name} station")
-            resources_backup = getattr(
-                self, f"load_resources_{self.config['backup_model']}"
-            )(station)
-            resources[station.name] = (self.config["backup_model"], resources_backup)
-
-        return resources
-
     def load_resources_petrov(self, station: "Station") -> dict[str, Any]:
 
         interp_dry: dict[time.Time, interpolate.CloughTocher2DInterpolator] = {}
@@ -431,7 +392,7 @@ class Tropospheric(Delay):
                 for idx in range(1, tmp.shape[0]):
                     (tmp[idx],) = interpolate.RectBivariateSpline(
                         lat, lon, data[idx + 1].reshape(grid_shape)
-                    )(station.location(t0).lat.deg, station.location(t0).lon.deg)[0]
+                    )(station.location.lat.deg, station.location.lon.deg)[0]
 
                 grid_data.append(tmp)
 
@@ -450,18 +411,52 @@ class Tropospheric(Delay):
             "ge_wet": interpolate.interp1d(data[0], data[8], kind=interp_type),
         }
 
+    def _load_resources(self) -> dict["Station", tuple[str, Any]]:
+
+        resources: dict["Station", tuple[str, Any]] = {}
+
+        for station in self.exp.stations.values():
+
+            if station in resources:
+                continue
+
+            # Try to load resources with main model
+            success: bool = True
+            try:
+                resources_main = getattr(
+                    self, f"load_resources_{self.config['model']}"
+                )(station)
+            except ValueError as e:
+                if f"Station {station.name} not found" not in str(e):
+                    raise e
+                success = False
+
+            # If successful, add resources to dictionary
+            if success:
+                resources[station] = (self.config["model"], resources_main)
+                continue
+
+            if not self.config["backup"]:
+                log.error(
+                    "Failed to load tropospheric delay: "
+                    f"Station {station.name} not found in {self.config['model']} data"
+                )
+                exit(1)
+
+            log.warning(f"Using backup tropospheric model for {station.name} station")
+            resources_backup = getattr(
+                self, f"load_resources_{self.config['backup_model']}"
+            )(station)
+            resources[station] = (self.config["backup_model"], resources_backup)
+
+        return resources
+
 
 class Ionospheric(Delay):
-    """Ionospheric delay
+    """Ionospheric delay"""
 
-    # Available models
-    ## [MISSING NAME OF MODEL]
-    - BRIEF DESCRIPTION OF THE MODEL AND SOURCE
-    - DESCRIPTION OF REQUIRED RESOURCES AND KEYS
-    """
-
-    name = "Ionospheric"
-    etc = {
+    name: str = "Ionospheric"
+    etc: dict[str, Any] = {
         "url": "https://cddis.nasa.gov/archive/gps/products/ionex",
         "new_format_week": 2238,
         "gps_week_ref": time.Time("1980-01-06T00:00:00", scale="utc"),
@@ -469,8 +464,8 @@ class Ionospheric(Delay):
         "ftp_server": "gdc.cddis.eosdis.nasa.gov",
         "solution_type": "FIN",
     }
-    requires_spice = False
-    station_specific = True
+    key: str = "iono"
+    requires_spice: bool = False
 
     def ensure_resources(self) -> None:
 
@@ -554,13 +549,14 @@ class Ionospheric(Delay):
 
         return None
 
-    def load_resources(self) -> dict[str, Any]:
+    def _load_resources(self) -> dict[str, Any]:
+        """Create TEC maps"""
 
-        # Generate TEC maps
-        tec_epochs = time.Time([key[0] for key in self.resources["coverage"]])
-        _tec_maps: list[np.ndarray] = []
+        tec_epochs: list[time.Time] = [key[0] for key in self.resources["coverage"]]
+        tec_maps: list[np.ndarray] = []
+        resources: dict[str, Any] = {}
 
-        for source in self.resources["coverage"].values():
+        for (t0, _), source in self.resources["coverage"].items():
 
             with source.open() as f:
 
@@ -601,52 +597,36 @@ class Ionospheric(Delay):
                         line = next(content)
 
                     assert "END OF TEC MAP" in line
-                    _tec_maps.append(grid)
+                    tec_maps.append(grid)
 
-        tec_maps = [
-            interpolate.RegularGridInterpolator((lon_grid, lat_grid), grid.T)
-            for grid in _tec_maps
-        ]
-
-        # Generate interpolators for the baselines
-        resources: dict[str, Any] = {}
-        for baseline in self.exp.baselines:
-
-            coords = baseline.station.location(tec_epochs)
-            data = [
-                tec_map([lon, lat])[0]
-                for tec_map, lon, lat in zip(tec_maps, coords.lon.deg, coords.lat.deg)  # type: ignore
-            ]
-            interp_type: str = "linear" if len(data) <= 3 else "cubic"
-            resources[baseline.station.name] = interpolate.interp1d(
-                tec_epochs.mjd, data, kind=interp_type
-            )
+        resources["tec_maps"] = {
+            epoch: interpolate.RegularGridInterpolator((lon_grid, lat_grid), grid.T)
+            for epoch, grid in zip(tec_epochs, tec_maps)
+        }
 
         return resources
 
 
 class ThermalDeformation(Delay):
-    """Thermal deformation of antennas
+    """Delay due to thermal deformation of antennas
 
-    # Available models
-    ## Nothnagel
-    - Source:  Nothnagel (2009) https://doi.org/10.1007/s00190-008-0284-z
-
-    Required resources:
-    - Temperature at station location (Obtained from site-specific Vienna)
-    - Antenna information: Focus type, mount type, foundation height and thermal expansion coefficient and reference temperature
+    Model: Nothnagel (2009) https://doi.org/10.1007/s00190-008-0284-z
     """
 
-    name = "ThermalDeformation"
-    etc = {
+    name: str = "ThermalDeformation"
+    requires_spice: bool = False
+    etc: dict[str, Any] = {
         "url": "https://vmf.geo.tuwien.ac.at/trop_products",
     }
-    requires_spice = False
-    station_specific = True
 
     def ensure_resources(self) -> None:
+        """Required resources for thermal deformation correction
 
-        # Initialize date from which to look for atmospheric data
+        - Temperature at station location (Site-specific Vienna)
+        - Antenna information: Focus type, mount type, gamma_hf, T0, hf
+        """
+
+        # Initialize date from which to look for tropospheric data
         date: Any = time.Time(
             self.exp.initial_epoch.mjd // 1, format="mjd", scale="utc"  # type: ignore
         )
@@ -700,13 +680,12 @@ class ThermalDeformation(Delay):
 
         return None
 
-    def load_resources(self) -> dict[str, Any]:
+    def _load_resources(self) -> dict["Station", Any]:
 
-        resources: dict[str, tuple["Antenna", Any]] = {}
+        resources: dict["Station", tuple[Antenna, Any]] = {}
 
-        for baseline in self.exp.baselines:
+        for station in self.exp.stations.values():
 
-            station = baseline.station
             if station in resources:
                 continue
 
@@ -732,7 +711,7 @@ class ThermalDeformation(Delay):
                         f"Thermal deformation disabled for {station.name}: "
                         "Missing antenna parameters"
                     )
-                    resources[station.name] = (_antenna, None)
+                    resources[station] = (_antenna, None)
                     continue
                 else:
                     _antenna = Antenna.from_string(matching_antenna)
@@ -761,7 +740,7 @@ class ThermalDeformation(Delay):
 
             # Flag station if no data is available
             if len(data) == 0:
-                resources[station.name] = (_antenna, None)
+                resources[station] = (_antenna, None)
                 continue
 
             data = np.array(data).T
@@ -777,7 +756,7 @@ class ThermalDeformation(Delay):
             }
 
             # Add station to resources
-            resources[station.name] = (_antenna, _thermo)
+            resources[station] = (_antenna, _thermo)
 
         return resources
 
@@ -811,3 +790,49 @@ class ThermalDeformation(Delay):
 
         # Calculate relative humidity
         return 100 * wvp / ew
+
+    def calculate(self, observation: "Observation", epochs: time.Time):
+
+        # Load resources
+        station = observation.baseline[1]
+        antenna, atmosphere = self.exp.resources[self.name][station]
+
+        # Turn epochs into UTC MJD
+        mjds: np.ndarray = epochs.utc.mjd  # type: ignore
+
+        # Return zeros if antenna or atmosphere missing
+        if atmosphere is None:
+            return 0.0 * mjds
+
+        # Calculate atmospheric conditions at epochs
+        p = atmosphere["p"](mjds)
+        T = atmosphere["TC"](mjds)
+        hum = atmosphere["hum"](mjds)
+
+        # Coordinates of the station
+
+        # Calculate delay due to thermal deformation
+        match antenna.mount_type:
+            case "MO_RICH":
+
+                # Missalignment of fixed axis wrt North and horizon (Nothnagel 2009)
+                d_lambda: float = np.deg2rad(-0.12)
+                phi_0: float = np.deg2rad(39.06)
+
+                raise NotImplementedError("MO_RICH mount type not implemented")
+            case "MO_AZEL":
+                raise NotImplementedError("MO_AZEL mount type not implemented")
+            case "MO_EQUA":
+                raise NotImplementedError("MO_EQUA mount type not implemented")
+            case "MO_XYNO":
+                raise NotImplementedError("MO_XYNO mount type not implemented")
+            case "MO_XYEA":
+                raise NotImplementedError("MO_XYEA mount type not implemented")
+            case _:
+                log.error(
+                    f"Failed to calculate thermal deformation delay for {station.name}:"
+                    " Invalid mount type"
+                )
+                exit(1)
+
+        return None

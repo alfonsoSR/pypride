@@ -16,7 +16,6 @@ class Setup:
             config = yaml.safe_load(f)
 
         # Paths to internal and external files
-        internal = internal_file("")
         external = Path().home() / ".pride"
 
         # Internal configuration
