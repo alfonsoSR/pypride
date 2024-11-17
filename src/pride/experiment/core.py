@@ -2,12 +2,14 @@ from pathlib import Path
 from ..io import Setup, Vex, VexContent, VEX_DATE_FORMAT, load_catalog, internal_file
 from ..logger import log
 from astropy import time, coordinates
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Generator
 from ..types import ObservationMode, SourceType, Band
 import numpy as np
 import datetime
 from .. import utils
 from ..delays import DELAY_MODELS
+from contextlib import contextmanager
+import spiceypy as spice
 
 if TYPE_CHECKING:
     from ..delays.core import Delay
@@ -508,5 +510,27 @@ class Experiment:
         self.resources: dict[str, Any] = {
             delay.name: delay.load_resources() for delay in self.delays
         }
+
+        return None
+
+    @contextmanager
+    def spice_kernels(self) -> Generator:
+        """Context manager to load SPICE kernels"""
+
+        try:
+            if self.requires_spice:
+                log.info("Loading SPICE kernels")
+                metak = str(
+                    self.setup.resources["ephemerides"]
+                    / self.setup.general["target"]
+                    / "metak.tm"
+                )
+                spice.furnsh(metak)
+
+            yield None
+        finally:
+            if self.requires_spice:
+                log.info("Unloading SPICE kernels")
+                spice.kclear()
 
         return None

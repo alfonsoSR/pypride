@@ -29,6 +29,10 @@ class Setup:
         for key, val in self.resources.items():
             self.resources[key] = external / val
 
+        self.displacements: dict[str, dict[str, Any]] = config["Displacements"]
+        for displacement in self.displacements.values():
+            displacement["data"] = external / displacement["data"]
+
         self.delays: dict[str, dict[str, Any]] = config["Delays"]
         for delay in self.delays.values():
             delay["data"] = external / delay["data"]
