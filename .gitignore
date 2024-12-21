@@ -5,3 +5,6 @@
 tests
 doc
 src/pride/displacements/old.py
+
+# Compiled extension modules
+*.so
