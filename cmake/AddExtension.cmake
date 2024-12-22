@@ -23,6 +23,9 @@ macro (add_extension source_dir output_dir)
     endif()
 
     # Compile and install extension
+
+    message(STATUS "SIGNATURE: ${signature_files}")
+    message(STATUS "FORTRAN: ${fortran_files}")
     execute_process(
         COMMAND
             ${Python_EXECUTABLE} -m numpy.f2py

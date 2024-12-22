@@ -40,7 +40,7 @@ class OceanLoading(Displacement):
 
             content = f.readlines()
 
-            for baseline in self.exp.baselines:
+            for baseline in self.exp.baselines.values():
 
                 _amp: np.ndarray | None = None
                 _phs: np.ndarray | None = None
