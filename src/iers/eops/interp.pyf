@@ -14,6 +14,13 @@ python module interp ! in
             double precision, intent(out) :: y_int
             double precision, intent(out) :: ut1_int
         end subroutine interp
+        subroutine lagint(x,y,n,xint,yout) ! in :interp:INTERP.F
+            real*8 dimension(n), intent(in) :: x
+            real*8 dimension(n),depend(n), intent(in) :: y
+            integer, optional,check(shape(x, 0) == n),depend(x), intent(in) :: n=shape(x, 0)
+            real*8, intent(in) :: xint
+            real*8, intent(out) :: yout
+        end subroutine lagint
     end interface
 end python module interp
 
