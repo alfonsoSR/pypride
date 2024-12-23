@@ -86,7 +86,7 @@ class EOP:
         return out
 
 
-def gcrs_2_itrf(eops: np.ndarray, epoch: time.Time) -> np.ndarray:
+def icrf_2_itrf(eops: np.ndarray, epoch: time.Time) -> np.ndarray:
 
     # Epochs in TT and UTC
     tt_epoch: time.Time = epoch.tt  # type: ignore
@@ -107,6 +107,6 @@ def gcrs_2_itrf(eops: np.ndarray, epoch: time.Time) -> np.ndarray:
     return RPOM_matrix @ RC2TI_matrix
 
 
-def itrf_2_gcrs(eops: np.ndarray, epoch: time.Time) -> np.ndarray:
+def itrf_2_icrf(eops: np.ndarray, epoch: time.Time) -> np.ndarray:
 
-    return gcrs_2_itrf(eops, epoch).swapaxes(1, 2)
+    return icrf_2_itrf(eops, epoch).swapaxes(-1, -2)
