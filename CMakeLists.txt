@@ -18,3 +18,4 @@ include(AddExtension)
 # Add extensions
 add_extension(${IERS_SOURCE_DIR}/dehanttideinel ${PRIDE_SOURCE_DIR}/external/iers)
 add_extension(${IERS_SOURCE_DIR}/eops ${PRIDE_SOURCE_DIR}/external/iers)
+add_extension(${IERS_SOURCE_DIR}/hardisp ${PRIDE_SOURCE_DIR}/external/iers)

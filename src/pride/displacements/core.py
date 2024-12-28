@@ -36,12 +36,18 @@ class Displacement:
         exit(1)
 
     @abstractmethod
-    def load_resources(self) -> None:
-        log.error(f"Method load_resources not implemented for {self.name} displacement")
+    def load_resources(
+        self, epoch: "time.Time", shared: dict[str, Any]
+    ) -> None:
+        log.error(
+            f"Method load_resources not implemented for {self.name} displacement"
+        )
         exit(1)
 
     @abstractmethod
-    def calculate(self, station: "Station", epoch: "time.Time"):
+    def calculate(self, epoch: "time.Time", resources: dict[str, Any]):
 
-        log.error(f"Method calculate not implemented for {self.name} displacement")
+        log.error(
+            f"Method calculate not implemented for {self.name} displacement"
+        )
         exit(1)

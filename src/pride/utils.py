@@ -4,7 +4,8 @@ from astropy.utils import iers
 import numpy as np
 import erfa
 from .logger import log
-from astropy import time
+from astropy import time, units
+from typing import Literal
 
 
 def factors(n: int) -> list[int]:
@@ -37,22 +38,24 @@ class EOP:
                 )
                 exit(1)
 
-        # Extract EOP data
+        # Extract EOP data [Units are s and arcsec]
         self.eops = {
             mjd: np.array([xp, yp, ut1_utc, dx, dy])
             for mjd, ut1_utc, xp, yp, dx, dy in zip(
                 eop_table["MJD"].data,
                 eop_table["UT1_UTC"].data,
-                eop_table["PM_x"].to("rad").data,
-                eop_table["PM_y"].to("rad").data,
-                eop_table["dX_2000A"].to("rad").data,
-                eop_table["dY_2000A"].to("rad").data,
+                eop_table["PM_x"].data,
+                eop_table["PM_y"].data,
+                eop_table["dX_2000A"].data,
+                eop_table["dY_2000A"].data,
             )
         }
 
         return None
 
-    def at_epoch(self, epoch: time.Time) -> np.ndarray:
+    def at_epoch(
+        self, epoch: time.Time, unit: Literal["rad", "arcsec"] = "arcsec"
+    ) -> np.ndarray:
 
         # Get MJD for given epochs
         mjd_int_list: np.ndarray = np.array([epoch.mjd // 1], dtype=int).ravel()  # type: ignore
@@ -83,7 +86,17 @@ class EOP:
             # Store interpolated values
             out[idx] = np.array([ut1_utc, x, y, dx, dy])
 
-        return out
+        match unit:
+            case "arcsec":
+                return out
+            case "rad":
+                x, y, dx, dy = (
+                    units.Quantity(out.T[1:], "arcsec").to("rad").value
+                )
+                return np.array([out.T[0], x, y, dx, dy]).T
+            case _:
+                log.error(f"Failed to generate EOPs: Invalid unit {unit}")
+                exit(1)
 
 
 def icrf_2_itrf(eops: np.ndarray, epoch: time.Time) -> np.ndarray:
@@ -92,8 +105,11 @@ def icrf_2_itrf(eops: np.ndarray, epoch: time.Time) -> np.ndarray:
     tt_epoch: time.Time = epoch.tt  # type: ignore
     utc_epoch: time.Time = epoch.utc  # type: ignore
 
-    # EOPS
-    ut1_utc, xp, yp, dx, dy = eops
+    # Convert EOPs to s and rad [Original units are s and arcsec]
+    ut1_utc, xp_as, yp_as, dx_as, dy_as = eops
+    xp, yp, dx, dy = (
+        units.Quantity([xp_as, yp_as, dx_as, dy_as], "arcsec").to("rad").value
+    )
 
     # Compute matrix following algorithm from IERS Conventions 2010 (5.9)
     x, y = erfa.xy06(tt_epoch.jd1, tt_epoch.jd2)

@@ -1,4 +1,14 @@
 from .core import Displacement
-from .corrections import SolidTide, OceanLoading
+from .models import SolidTide, OceanLoading, PoleTide
 
-__all__ = ["Displacement", "SolidTide", "OceanLoading"]
+DISPLACEMENT_MODELS: dict[str, type["Displacement"]] = {
+    SolidTide.name: SolidTide,
+    OceanLoading.name: OceanLoading,
+    PoleTide.name: PoleTide,
+}
+
+__all__ = [
+    "Displacement",
+    "DISPLACEMENT_MODELS",
+    "SolidTide",
+]
