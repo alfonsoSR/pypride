@@ -9,7 +9,7 @@ from ..io import (
 )
 from ..logger import log
 from astropy import time, coordinates
-from typing import Any, TYPE_CHECKING, Generator
+from typing import Any, TYPE_CHECKING, Generator, Literal
 from ..types import ObservationMode, SourceType, Band
 import numpy as np
 import datetime
@@ -207,7 +207,9 @@ class Station:
     def __repr__(self) -> str:
         return f"{self.name:10s}: {super().__repr__()}"
 
-    def corrected_location(self, epoch: time.Time) -> np.ndarray:
+    def corrected_location(
+        self, epoch: time.Time, frame: Literal["itrf", "icrf"] = "itrf"
+    ) -> np.ndarray:
 
         if self.__interp_location is None:
             log.error(
@@ -215,13 +217,26 @@ class Station:
             )
             exit(1)
 
-        return np.array(
+        xsta_itrf = np.array(
             [
                 self.__interp_location["x"](epoch.jd),
                 self.__interp_location["y"](epoch.jd),
                 self.__interp_location["z"](epoch.jd),
             ]
         ).T
+
+        match frame:
+            case "itrf":
+                return xsta_itrf
+            case "icrf":
+                eops = self.eops.at_epoch(epoch, unit="arcsec").T
+                itrf2icrf = utils.itrf_2_icrf(eops, epoch)
+                return (itrf2icrf @ xsta_itrf[:, :, None]).squeeze()
+            case _:
+                log.error(
+                    f"Failed to get corrected location: Invalid frame {frame}"
+                )
+                exit(1)
 
     def update_coordinates(
         self, epoch: "time.Time", displacements: list["Displacement"]
@@ -263,7 +278,10 @@ class Station:
             xsta += model.calculate(epoch, resources[model.name])
         xsta = xsta.T
 
-        log.debug("Check that interpolating locations is not problematic")
+        # NOTE: I checked the difference between xsta and the interpolated
+        # locations for GR035 and it is never bigger than 1e-9 m for any of the
+        # stations. This is orders of magnitude smaller than any of the
+        # displacements we are considering, so interpolating should be safe.
         self.__interp_location = {
             "x": interpolate.interp1d(epoch.jd, xsta[0], kind="cubic"),
             "y": interpolate.interp1d(epoch.jd, xsta[1], kind="cubic"),
