@@ -211,32 +211,23 @@ class Station:
         self, epoch: time.Time, frame: Literal["itrf", "icrf"] = "itrf"
     ) -> np.ndarray:
 
-        if self.__interp_location is None:
+        _interp_location = getattr(self, f"_interp_location_{frame}")
+
+        if _interp_location is None:
             log.error(
                 f"Interpolated location not found for {self.name} station"
             )
             exit(1)
 
-        xsta_itrf = np.array(
+        xsta = np.array(
             [
-                self.__interp_location["x"](epoch.jd),
-                self.__interp_location["y"](epoch.jd),
-                self.__interp_location["z"](epoch.jd),
+                _interp_location["x"](epoch.jd),
+                _interp_location["y"](epoch.jd),
+                _interp_location["z"](epoch.jd),
             ]
         ).T
 
-        match frame:
-            case "itrf":
-                return xsta_itrf
-            case "icrf":
-                eops = self.eops.at_epoch(epoch, unit="arcsec").T
-                itrf2icrf = utils.itrf_2_icrf(eops, epoch)
-                return (itrf2icrf @ xsta_itrf[:, :, None]).squeeze()
-            case _:
-                log.error(
-                    f"Failed to get corrected location: Invalid frame {frame}"
-                )
-                exit(1)
+        return xsta
 
     def update_coordinates(
         self, epoch: "time.Time", displacements: list["Displacement"]
@@ -276,16 +267,26 @@ class Station:
         xsta = shared_resources["xsta_itrf"]
         for model in displacements:
             xsta += model.calculate(epoch, resources[model.name])
-        xsta = xsta.T
+        xsta = xsta
+
+        # Convert coordinates to ICRF
+        itrf2icrf = utils.itrf_2_icrf(eops, epoch)
+        xsta_icrf = (itrf2icrf @ xsta[:, :, None]).squeeze()
 
         # NOTE: I checked the difference between xsta and the interpolated
         # locations for GR035 and it is never bigger than 1e-9 m for any of the
         # stations. This is orders of magnitude smaller than any of the
         # displacements we are considering, so interpolating should be safe.
-        self.__interp_location = {
-            "x": interpolate.interp1d(epoch.jd, xsta[0], kind="cubic"),
-            "y": interpolate.interp1d(epoch.jd, xsta[1], kind="cubic"),
-            "z": interpolate.interp1d(epoch.jd, xsta[2], kind="cubic"),
+        self._interp_location_itrf = {
+            "x": interpolate.interp1d(epoch.jd, xsta[:, 0], kind="cubic"),
+            "y": interpolate.interp1d(epoch.jd, xsta[:, 1], kind="cubic"),
+            "z": interpolate.interp1d(epoch.jd, xsta[:, 2], kind="cubic"),
+        }
+
+        self._interp_location_icrf = {
+            "x": interpolate.interp1d(epoch.jd, xsta_icrf[:, 0], kind="cubic"),
+            "y": interpolate.interp1d(epoch.jd, xsta_icrf[:, 1], kind="cubic"),
+            "z": interpolate.interp1d(epoch.jd, xsta_icrf[:, 2], kind="cubic"),
         }
 
         return None
@@ -856,16 +857,18 @@ class Experiment:
 
         _displacement_models: list["Displacement"] = []
 
-        # Initialize displacement models
-        for id, config in self.setup.displacements.items():
-            if config["calculate"]:
-                if id not in DISPLACEMENT_MODELS:
+        for displacement, calculate in self.setup.displacements.items():
+            if calculate:
+                if displacement not in DISPLACEMENT_MODELS:
                     log.error(
-                        f"Failed to initialize {id} displacement: Model not found"
+                        f"Failed to initialize {displacement} displacement: "
+                        "Model not found"
                     )
                     exit(1)
-                _displacement_models.append(DISPLACEMENT_MODELS[id](self))
-                if DISPLACEMENT_MODELS[id].requires_spice:
+                _displacement_models.append(
+                    DISPLACEMENT_MODELS[displacement](self)
+                )
+                if DISPLACEMENT_MODELS[displacement].requires_spice:
                     self.requires_spice = True
 
         return _displacement_models

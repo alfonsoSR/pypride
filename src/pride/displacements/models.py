@@ -6,6 +6,7 @@ from astropy import time
 import spiceypy as spice
 from ..constants import J2000
 from ..external.iers import dehanttideinel, hardisp
+from .. import io
 
 
 class SolidTide(Displacement):
@@ -73,10 +74,11 @@ class OceanLoading(Displacement):
 
     name: str = "OceanLoading"
     requires_spice: bool = False
+    model: str = "tpxo72"
 
     def ensure_resources(self) -> None:
 
-        source = self.config["data"] / f"{self.config['model']}.blq"
+        source = io.internal_file(f"{self.model}.blq")
         if not source.exists():
             log.error(
                 f"Failed to initialize {self.name} displacement: {source} not found"

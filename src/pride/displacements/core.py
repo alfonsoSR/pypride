@@ -14,14 +14,12 @@ class Displacement:
     """
 
     name: str = NotImplemented
-    etc: dict[str, Any] = NotImplemented
     requires_spice: bool = NotImplemented
-    models: list[str] = NotImplemented
 
     def __init__(self, experiment: "Experiment") -> None:
 
         self.exp = experiment
-        self.config: dict[str, Any] = self.exp.setup.displacements[self.name]
+        # self.config: dict[str, Any] = self.exp.setup.displacements[self.name]
         self._resources: dict[str, Any] = {}
         self.resources: dict[str, Any] = {}
         self.ensure_resources()

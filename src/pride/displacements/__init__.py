@@ -7,8 +7,4 @@ DISPLACEMENT_MODELS: dict[str, type["Displacement"]] = {
     PoleTide.name: PoleTide,
 }
 
-__all__ = [
-    "Displacement",
-    "DISPLACEMENT_MODELS",
-    "SolidTide",
-]
+__all__ = ["Displacement", "DISPLACEMENT_MODELS"]

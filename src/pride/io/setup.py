@@ -29,45 +29,10 @@ class Setup:
         for key, val in self.resources.items():
             self.resources[key] = external / val
 
-        self.displacements: dict[str, dict[str, Any]] = config["Displacements"]
-        for displacement in self.displacements.values():
-            displacement["data"] = external / displacement["data"]
+        self.displacements: dict[str, bool] = config["Displacements"]
 
         self.delays: dict[str, dict[str, Any]] = config["Delays"]
         for delay in self.delays.values():
             delay["data"] = external / delay["data"]
-
-        # self.geo: dict[str, Any] = config["Geometric"]
-        # self.geo["data"] = external / self.geo["data"]
-
-        # self.tropo: dict[str, Any] = config["Tropospheric"]
-        # self.tropo["data"] = external / self.tropo["data"]
-
-        # self.iono: dict[str, Any] = config["Ionospheric"]
-        # self.iono["data"] = external / self.iono["data"]
-
-        # self.thermal: dict[str, Any] = config["ThermalDeformation"]
-        # self.thermal["data"] = external / self.thermal["data"]
-
-        # self.directories: dict[str, Path] = config["Directories"]
-        # for key, val in self.directories.items():
-        #     self.directories[key] = _base / val
-
-        # # Models & switches
-        # self.models = config["Models"]
-        # self.switches: dict[str, bool] = config["Switches"]
-
-        # # Delays
-        # self.delays: dict[str, bool] = config["Delays"]
-
-        # # Combine all tables
-        # self.all: dict[str, Any] = (
-        #     self.catalogues
-        #     | self.ephemerides
-        #     | self.metadata
-        #     | self.directories
-        #     | self.models
-        #     | self.switches
-        # )
 
         return None
