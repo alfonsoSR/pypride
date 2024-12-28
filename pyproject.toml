@@ -1,9 +1,10 @@
 [build-system]
 requires = [
-    "setuptools",
-    "wheel"
+    "scikit-build-core",
+    "numpy",
+    "meson"
 ]
-build-backend = "setuptools.build_meta"
+build-backend = "scikit_build_core.build"
 
 [project]
 dependencies = [
@@ -25,21 +26,6 @@ authors = [
 ]
 requires-python = ">=3.11"
 
-[tool.setuptools.packages.find]
-where = [
-    "src"
-]
-
-[tool.mypy]
-mypy_path = "src"
-check_untyped_defs = false
-disallow_any_generics = true
-ignore_missing_imports = true
-no_implicit_optional = true
-show_error_codes = true
-strict_equality = true
-warn_redundant_casts = true
-warn_return_any = true
-warn_unreachable = true
-warn_unused_configs = true
-no_implicit_reexport = true
+[tool.scikit-build]
+ninja.version = ">=1.10"
+cmake.version = ">=3.17.2"

@@ -72,7 +72,9 @@ class Geometric(Delay):
                             klist.append(line.replace("$KERNELS/", "")[1:-1])
                         line = next(content)
                     if line.split(")")[0] != "":
-                        klist.append(line.split(")")[0].replace("$KERNELS/", "")[1:-1])
+                        klist.append(
+                            line.split(")")[0].replace("$KERNELS/", "")[1:-1]
+                        )
                     break
 
         # Ensure that all kernels are present
@@ -81,7 +83,9 @@ class Geometric(Delay):
                 log.info(f"Downloading {kernel_source}/{kernel}")
                 response = requests.get(f"{kernel_source}/{kernel}")
                 if response.ok:
-                    (kernel_path / kernel).parent.mkdir(parents=True, exist_ok=True)
+                    (kernel_path / kernel).parent.mkdir(
+                        parents=True, exist_ok=True
+                    )
                     (kernel_path / kernel).write_bytes(response.content)
                 else:
                     log.error(
@@ -171,7 +175,9 @@ class Tropospheric(Delay):
             # Download file if not present
             if not spd_file.exists():
                 log.info(f"Downloading {spd_file}")
-                response = requests.get(f"{self.etc['petrov_url']}/{spd_file.name}")
+                response = requests.get(
+                    f"{self.etc['petrov_url']}/{spd_file.name}"
+                )
                 if response.ok:
                     spd_file.write_bytes(response.content)
                 else:
@@ -246,7 +252,8 @@ class Tropospheric(Delay):
             hour = date.datetime.hour
 
             grid_file = (
-                self.config["data"] / f"V3GR_{year:04d}{month:02d}{day:02d}.H{hour:02d}"
+                self.config["data"]
+                / f"V3GR_{year:04d}{month:02d}{day:02d}.H{hour:02d}"
             )
             grid_url = (
                 f"{self.etc['vienna_url']}/GRID/1x1/V3GR/"
@@ -280,7 +287,7 @@ class Tropospheric(Delay):
 
         resources: dict[str, tuple[str, Any]] = {}
 
-        for baseline in self.exp.baselines:
+        for baseline in self.exp.baselines.values():
 
             # Check if resources are already available for station
             station = baseline.station
@@ -312,11 +319,16 @@ class Tropospheric(Delay):
                 exit(1)
 
             # Attempt to load resources for backup model
-            log.warning(f"Using backup tropospheric model for {station.name} station")
+            log.warning(
+                f"Using backup tropospheric model for {station.name} station"
+            )
             resources_backup = getattr(
                 self, f"load_resources_{self.config['backup_model']}"
             )(station)
-            resources[station.name] = (self.config["backup_model"], resources_backup)
+            resources[station.name] = (
+                self.config["backup_model"],
+                resources_backup,
+            )
 
         return resources
 
@@ -375,8 +387,12 @@ class Tropospheric(Delay):
             epoch = time.Time(t0.datetime, scale="tai")
 
             # Interpolators
-            interp_dry[epoch] = interpolate.CloughTocher2DInterpolator(spd_grid, dry)
-            interp_wet[epoch] = interpolate.CloughTocher2DInterpolator(spd_grid, wet)
+            interp_dry[epoch] = interpolate.CloughTocher2DInterpolator(
+                spd_grid, dry
+            )
+            interp_wet[epoch] = interpolate.CloughTocher2DInterpolator(
+                spd_grid, wet
+            )
             elevation_cutoff[epoch] = np.min(spd_grid[:, 0])
 
         return {
@@ -398,7 +414,9 @@ class Tropospheric(Delay):
 
                 content: str = ""
                 for line in file:
-                    if np.any([name in line for name in station.possible_names]):
+                    if np.any(
+                        [name in line for name in station.possible_names]
+                    ):
                         content = line
                         break
 
@@ -415,10 +433,14 @@ class Tropospheric(Delay):
         if site_present:
             data = np.array(site_data).T
         else:
-            log.warning(f"Using gridded tropospheric data for {station.name} station")
+            log.warning(
+                f"Using gridded tropospheric data for {station.name} station"
+            )
             grid_data: list[np.ndarray] = []
 
-            for (t0, _), source in self.resources["coverage_vienna_grid"].items():
+            for (t0, _), source in self.resources[
+                "coverage_vienna_grid"
+            ].items():
 
                 data = np.loadtxt(source, skiprows=7).T
                 lat = np.sort(np.unique(data[0]))
@@ -431,7 +453,12 @@ class Tropospheric(Delay):
                 for idx in range(1, tmp.shape[0]):
                     (tmp[idx],) = interpolate.RectBivariateSpline(
                         lat, lon, data[idx + 1].reshape(grid_shape)
-                    )(station.location(t0).lat.deg, station.location(t0).lon.deg)[0]
+                    )(
+                        station.location(t0).lat.deg,
+                        station.location(t0).lon.deg,
+                    )[
+                        0
+                    ]
 
                 grid_data.append(tmp)
 
@@ -444,8 +471,12 @@ class Tropospheric(Delay):
             "a_wet": interpolate.interp1d(data[0], data[2], kind=interp_type),
             "d_hydro": interpolate.interp1d(data[0], data[3], kind=interp_type),
             "d_wet": interpolate.interp1d(data[0], data[4], kind=interp_type),
-            "gn_hydro": interpolate.interp1d(data[0], data[5], kind=interp_type),
-            "ge_hydro": interpolate.interp1d(data[0], data[6], kind=interp_type),
+            "gn_hydro": interpolate.interp1d(
+                data[0], data[5], kind=interp_type
+            ),
+            "ge_hydro": interpolate.interp1d(
+                data[0], data[6], kind=interp_type
+            ),
             "gn_wet": interpolate.interp1d(data[0], data[7], kind=interp_type),
             "ge_wet": interpolate.interp1d(data[0], data[8], kind=interp_type),
         }
@@ -515,7 +546,9 @@ class Ionospheric(Delay):
                     ftp = FTP_TLS(self.etc["ftp_server"])
                     ftp.login(user="anonymous", passwd="")
                     ftp.prot_p()
-                    ftp.cwd("gps/products/ionex/" + "/".join(url.split("/")[-3:-1]))
+                    ftp.cwd(
+                        "gps/products/ionex/" + "/".join(url.split("/")[-3:-1])
+                    )
                     if not ionex_file.name in ftp.nlst():
                         raise FileNotFoundError(
                             "Failed to initialize ionospheric delay: "
@@ -595,7 +628,9 @@ class Ionospheric(Delay):
                     for i, _ in enumerate(lat_grid):
 
                         grid[i] = np.array(
-                            " ".join([next(content).strip() for _ in range(5)]).split(),
+                            " ".join(
+                                [next(content).strip() for _ in range(5)]
+                            ).split(),
                             dtype=float,
                         )
                         line = next(content)
@@ -745,7 +780,9 @@ class ThermalDeformation(Delay):
 
                     content: str = ""
                     for line in file:
-                        if np.any([name in line for name in station.possible_names]):
+                        if np.any(
+                            [name in line for name in station.possible_names]
+                        ):
                             content = line
                             break
 
