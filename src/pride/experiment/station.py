@@ -225,7 +225,7 @@ class Station:
         return None
 
     def location(
-        self, epoch: "time.Time", frame: Literal["itrf", "gcrs"] = "itrf"
+        self, epoch: "time.Time", frame: Literal["itrf", "icrf"] = "itrf"
     ) -> np.ndarray:
         """Time-dependent station coordinates
 
@@ -245,7 +245,7 @@ class Station:
 
             out = np.array(self.tectonic_corrected_location(epoch).geocentric).T
             match frame:
-                case "gcrs":
+                case "icrf":
                     eops = self.exp.eops.at_epoch(epoch, unit="arcsec")
                     return (
                         coord.itrf2icrf(eops, epoch) @ out[:, :, None]

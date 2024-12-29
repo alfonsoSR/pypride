@@ -1,11 +1,17 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from ..types import SourceType
-from astropy import coordinates
+from astropy import coordinates, time
+from nastro import types as nt
 from ..logger import log
+import numpy as np
+import spiceypy as spice
+from ..constants import J2000
+
 
 if TYPE_CHECKING:
     from .experiment import Experiment
     from ..io import VexContent
+    from .station import Station
 
 
 class Source:
@@ -24,7 +30,7 @@ class Source:
         self.coordinates = coordinates.SkyCoord(
             ra, dec, unit="rad", frame="icrs"
         )
-        self.spice_id = spice_id
+        setattr(self, "_spice_id", spice_id)
         setattr(self, "_exp", None)
 
         return None
@@ -36,6 +42,14 @@ class Source:
             log.error(f"Experiment not set for {self.name} source")
             exit(1)
         return getattr(self, "_exp")
+
+    @property
+    def spice_id(self) -> str:
+
+        if getattr(self, "_spice_id") is None:
+            log.error(f"Spice ID not set for {self.name} source")
+            exit(1)
+        return getattr(self, "_spice_id")
 
     @staticmethod
     def from_experiment(name: str, experiment: "Experiment") -> "Source":
@@ -61,7 +75,7 @@ class Source:
         # Identify source type and add spice ID if necessary
         source_type = Source.__find_type(source_info, name)
         spice_id: str | None = None
-        if source_type == SourceType.FarField:
+        if source_type == SourceType.NearField:
             spice_id = experiment.setup.general["target"]
 
         # Generate object and add experiment as attribute
@@ -99,3 +113,136 @@ class Source:
 
     def __repr__(self) -> str:
         return f"{self.name:10s}: {super().__repr__()}"
+
+    def azel_from(self, station: "Station", epoch: "time.Time") -> Any:
+        """Calculate azimuth and elevation as seen from a station
+
+        :param station: Station from which the source is observed
+        :param epoch: Observation epochs
+        :return: Azimuth and elevation of the source as numpy arrays
+        """
+
+        if self.type == SourceType.NearField:
+            self.__spacecraft_azel(station, epoch)
+        else:
+            print(f"{self.name} is a calibrator")
+
+        return None
+
+    def __spacecraft_azel(self, station: "Station", epoch: "time.Time"):
+
+        clight = spice.clight() * 1e3
+
+        # Calculate station coordinates at observation epochs
+        xsta_gcrf = station.location(epoch, frame="icrf")
+        sta_r_earth = xsta_gcrf
+        cstate_sta = nt.CartesianState(*xsta_gcrf.T, *(0.0 * xsta_gcrf.T))
+
+        # Initialize light-time between target and station
+        et: np.ndarray = (epoch.tdb - J2000.tdb).to("s").value  # type: ignore
+        xsc_gcrf = (
+            np.array(
+                spice.spkpos(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
+            )
+            * 1e3
+        )
+        lt_0 = np.linalg.norm(xsc_gcrf - xsta_gcrf, axis=1) / clight
+        epoch_tx0 = epoch.tdb - time.TimeDelta(lt_0, format="sec")
+
+        # Initialize light-time container
+        lt_i = np.zeros_like(lt_0)
+        ni = 0
+        precision = 1e-12
+        nmax = 3
+
+        # Get GM of celestial bodies
+        bodies = (
+            "sun",
+            "mercury",
+            "venus",
+            "earth",
+            "moon",
+            "mars",
+            "jupiter_barycenter",
+            "saturn_barycenter",
+            "uranus_barycenter",
+            "neptune_barycenter",
+        )
+        bodies_gm = (
+            np.array([spice.bodvrd(body, "GM", 1)[1][0] for body in bodies])
+            * 1e9
+        )
+
+        while np.any(np.abs(lt_0 - lt_i) > precision) and (ni < nmax):
+
+            # Update light-time
+            lt_i = lt_0
+            epoch_tx = epoch.tdb - time.TimeDelta(lt_i, format="sec")
+            dt = (epoch_tx.tdb - epoch_tx0.tdb).to("s").value  # type: ignore
+
+            # Calculate target's position wrt station at TX epoch
+            et = (epoch_tx.tdb - J2000.tdb).to("s").value  # type: ignore
+            s_sc_earth_tx = nt.CartesianState(
+                *np.array(
+                    spice.spkezr(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
+                ).T
+                * 1e3
+            )
+            s_sta_sc_tx = cstate_sta - s_sc_earth_tx
+            r01 = s_sta_sc_tx.r_vec.T
+            r01_mag = s_sta_sc_tx.r_mag
+            r0 = s_sc_earth_tx.r_vec.T
+            v0 = s_sc_earth_tx.v_vec.T
+
+            # Get state of celestial bodies at TX epoch
+            bodies_cstate = np.array(
+                [
+                    np.array(spice.spkezr(body, et, "J2000", "NONE", "SSB")[0])
+                    * 1e3
+                    for body in bodies
+                ]
+            )
+            rb = bodies_cstate[:, :, :3]
+            vb = bodies_cstate[:, :, 3:]
+
+            # Calculate terms of relativistic correction
+            r0b = r0[None, :, :] - (rb - dt[None, :, None] * vb)
+            r0b_mag = np.linalg.norm(r0b, axis=-1)
+            r1b = sta_r_earth[None, :, :] - rb
+            r1b_mag = np.linalg.norm(r1b, axis=-1)
+            r01b_mag = np.linalg.norm(r1b - r0b, axis=-1)
+
+            # Calculate relativistic correction
+            gmc = 2.0 * bodies_gm[:, None] / (clight * clight)
+            rlt = np.sum(
+                (gmc / clight)
+                * np.log(
+                    (r0b_mag + r1b_mag + r01b_mag + gmc)
+                    / (r0b_mag + r1b_mag - r01b_mag + gmc)
+                ),
+                axis=0,
+            )
+
+            # Update light-time with relativistic correction
+            denom = 1.0 - (np.sum((r01.T * v0.T), axis=0) / (clight * r01_mag))
+            lt_0 -= (lt_0 - r01_mag / clight - rlt) / denom
+
+            # Update TX epoch and counter
+            epoch_tx = epoch.tdb - time.TimeDelta(lt_0, format="sec")
+            ni += 1
+
+        # Calculate position of target wrt station at TX epoch
+        et = (epoch_tx.tdb - J2000.tdb).to("s").value  # type: ignore
+        s_sc_earth_tx = nt.CartesianState(
+            *np.array(
+                spice.spkezr(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
+            ).T
+            * 1e3
+        )
+        s_sc_sta_tx = s_sc_earth_tx - cstate_sta
+
+        print((epoch_tx.tdb - epoch.tdb).to("s").value)
+
+        exit(0)
+
+        return 0
