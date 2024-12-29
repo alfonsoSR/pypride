@@ -6,6 +6,7 @@ from ..logger import log
 from scipy import interpolate
 from ..external.iers import interp
 import erfa
+from .. import utils
 
 if TYPE_CHECKING:
     from ..experiment.experiment import Experiment
@@ -138,12 +139,12 @@ class EOP:
         # Return in requested units
         match unit:
             case "arcsec":
-                return out
+                return out.T
             case "rad":
                 x, y, dx, dy = (
                     units.Quantity(out.T[1:], "arcsec").to("rad").value
                 )
-                return np.array([out.T[0], x, y, dx, dy])
+                return np.array([out.T[0], x, y, dx, dy]).T
             case _:
                 log.error(f"Failed to generate EOPs: Invalid unit {unit}")
                 exit(1)
@@ -159,7 +160,7 @@ def seu2itrf(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
     return erfa.rz(-lon, erfa.ry(-lat, np.eye(3)))
 
 
-def icrf2itrf(eop: "EOP", epoch: "time.Time") -> np.ndarray:
+def icrf2itrf(eops: np.ndarray, epoch: "time.Time") -> np.ndarray:
     """Rotation matrix from ICRF to ITRF
 
     :param eop: Earth Orientation Parameters
@@ -172,7 +173,7 @@ def icrf2itrf(eop: "EOP", epoch: "time.Time") -> np.ndarray:
     utc_epoch: time.Time = epoch.utc  # type: ignore
 
     # Get EOPs in s and rad
-    ut1_utc, xp, yp, dx, dy = eop.at_epoch(utc_epoch, unit="rad")
+    ut1_utc, xp, yp, dx, dy = utils.eops_arcsec2rad(eops)
 
     # Compute matrix following algorithm from IERS Conventions 2010 (5.9)
     x, y = erfa.xy06(tt_epoch.jd1, tt_epoch.jd2)
@@ -186,7 +187,7 @@ def icrf2itrf(eop: "EOP", epoch: "time.Time") -> np.ndarray:
     return RPOM_matrix @ RC2TI_matrix
 
 
-def itrf2icrf(eop: "EOP", epoch: "time.Time") -> np.ndarray:
+def itrf2icrf(eops: np.ndarray, epoch: "time.Time") -> np.ndarray:
     """Rotation matrix from ITRF to ICRF
 
     :param eop: Earth Orientation Parameters
@@ -194,4 +195,4 @@ def itrf2icrf(eop: "EOP", epoch: "time.Time") -> np.ndarray:
     :return: Rotation matrix from ITRF to ICRF as (N, 3, 3) array
     """
 
-    return icrf2itrf(eop, epoch).swapaxes(-1, -2)
+    return icrf2itrf(eops, epoch).swapaxes(-1, -2)

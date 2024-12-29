@@ -172,11 +172,12 @@ class Station:
         lon = np.array(geodetic.lon.rad, dtype=float)
 
         # Shared resources between displacements
+        eops = self.exp.eops.at_epoch(epochs, unit="arcsec")
         shared_resources = {
             "station_names": self.possible_names,
-            "eops": self.exp.eops.at_epoch(epochs, unit="arcsec"),
+            "eops": eops,
             "seu2itrf": coord.seu2itrf(lat, lon),
-            "icrf2itrf": coord.icrf2itrf(self.exp.eops, epochs),
+            "icrf2itrf": coord.icrf2itrf(eops, epochs),
             "lat": lat,
             "lon": lon,
             "xsta_itrf": self.location(epochs),
@@ -245,8 +246,9 @@ class Station:
             out = np.array(self.tectonic_corrected_location(epoch).geocentric).T
             match frame:
                 case "gcrs":
+                    eops = self.exp.eops.at_epoch(epoch, unit="arcsec")
                     return (
-                        coord.itrf2icrf(self.exp.eops, epoch) @ out[:, :, None]
+                        coord.itrf2icrf(eops, epoch) @ out[:, :, None]
                     ).squeeze()
                 case "itrf":
                     return out

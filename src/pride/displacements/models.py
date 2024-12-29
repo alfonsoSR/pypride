@@ -209,9 +209,7 @@ class PoleTide(Displacement):
         # Calculate m1 and m2
         pow_dt = np.pow(dt[:, None], np.arange(4)[None, :])
         p_mean = (model @ pow_dt[:, :, None])[:, :, 0]
-        m1, m2 = (resources["eops"].T[1:3] - p_mean.T) * np.array(
-            [[1.0], [-1.0]]
-        )
+        m1, m2 = (resources["eops"][1:3] - p_mean.T) * np.array([[1.0], [-1.0]])
 
         # Calculate pole tide displacements in SEU system
         lat, lon = resources["lat"], resources["lon"]
