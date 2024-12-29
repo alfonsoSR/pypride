@@ -1,3 +1,5 @@
+raise DeprecationWarning("Legacy version kept for reference during development")
+
 from pathlib import Path
 from ..io import (
     Setup,
