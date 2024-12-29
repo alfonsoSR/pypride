@@ -1,5 +1,8 @@
-from .core import Delay
 from .models import Geometric, Tropospheric, Ionospheric, ThermalDeformation
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .core import Delay
 
 DELAY_MODELS: dict[str, type["Delay"]] = {
     Geometric.name: Geometric,
@@ -8,11 +11,4 @@ DELAY_MODELS: dict[str, type["Delay"]] = {
     ThermalDeformation.name: ThermalDeformation,
 }
 
-__all__ = [
-    "Delay",
-    "DELAY_MODELS",
-    "Geometric",
-    "Tropospheric",
-    "Ionospheric",
-    "ThermalDeformation",
-]
+__all__ = ["DELAY_MODELS"]

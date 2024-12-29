@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 from ..logger import log
 
 if TYPE_CHECKING:
-    from ..experiment.core import Experiment
+    from ..experiment.experiment import Experiment
 
 
 class Delay:
@@ -40,7 +40,9 @@ class Delay:
     def ensure_resources(self) -> None:
         """Ensure availability of external resources required to calculate the delay"""
 
-        log.error(f"Method ensure_resources not implemented for {self.name} delay")
+        log.error(
+            f"Method ensure_resources not implemented for {self.name} delay"
+        )
         exit(1)
 
         return None
@@ -50,5 +52,7 @@ class Delay:
 
         Updates the baselines of the experiment with resources required to calculate the delay in their specific time domain
         """
-        log.error(f"Method load_resources not implemented for {self.name} delay")
+        log.error(
+            f"Method load_resources not implemented for {self.name} delay"
+        )
         exit(1)

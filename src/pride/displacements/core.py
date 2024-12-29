@@ -3,7 +3,7 @@ from ..logger import log
 from abc import abstractmethod
 
 if TYPE_CHECKING:
-    from ..experiment.core import Experiment, Station
+    from ..experiment.experiment import Experiment
     from astropy import time
 
 

@@ -1,6 +1,6 @@
 from .core import Displacement
 from ..logger import log
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import numpy as np
 from astropy import time
 import spiceypy as spice
@@ -151,7 +151,7 @@ class OceanLoading(Displacement):
 
         # Convert displacements to ITRF
         disp_seu = np.array([ds, -dw, dv])
-        return (resources["seu2itrf"] @ disp_seu.T[:, :, None])[:, :, 0]
+        return (resources["seu2itrf"] @ disp_seu.T[:, :, None]).squeeze()
 
 
 class PoleTide(Displacement):
@@ -209,7 +209,9 @@ class PoleTide(Displacement):
         # Calculate m1 and m2
         pow_dt = np.pow(dt[:, None], np.arange(4)[None, :])
         p_mean = (model @ pow_dt[:, :, None])[:, :, 0]
-        m1, m2 = (resources["eops"][1:3] - p_mean.T) * np.array([[1.0], [-1.0]])
+        m1, m2 = (resources["eops"].T[1:3] - p_mean.T) * np.array(
+            [[1.0], [-1.0]]
+        )
 
         # Calculate pole tide displacements in SEU system
         lat, lon = resources["lat"], resources["lon"]
@@ -224,4 +226,4 @@ class PoleTide(Displacement):
         ).T
 
         # Convert displacements to ITRF
-        return (resources["seu2itrf"] @ disp_seu[:, :, None])[:, :, 0]
+        return (resources["seu2itrf"] @ disp_seu[:, :, None]).squeeze()

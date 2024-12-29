@@ -8,3 +8,21 @@ Catalogues:
   # Ocean loading parameters for stations
   ocean_loading: tpxo72.blq
   # Directory with spacecraft ephemerides
+Configuration:
+  # Celestial bodies to consider for relativistic LT corrections
+  lt_correction_bodies: [
+    sun,
+    mercury,
+    venus,
+    earth,
+    moon,
+    mars,
+    jupiter_barycenter,
+    saturn_barycenter,
+    uranus_barycenter,
+    neptune_barycenter
+  ]
+  # EOP Bulletin [A, B]
+  eop_bulletin: "B"
+  # Format used to specify dates in VEX files
+  vex_date_format: "%Yy%jd%Hh%Mm%Ss"

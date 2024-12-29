@@ -21,6 +21,7 @@ class Setup:
         # Internal configuration
         internal_config = load_catalog("config.yaml")
         self.catalogues: dict[str, Any] = internal_config["Catalogues"]
+        self.internal: dict[str, Any] = internal_config["Configuration"]
 
         # User configuration
         self.general: dict[str, Any] = config["Experiment"]

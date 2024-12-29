@@ -1,5 +1,8 @@
-from .core import Displacement
 from .models import SolidTide, OceanLoading, PoleTide
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .core import Displacement
 
 DISPLACEMENT_MODELS: dict[str, type["Displacement"]] = {
     SolidTide.name: SolidTide,
@@ -7,4 +10,4 @@ DISPLACEMENT_MODELS: dict[str, type["Displacement"]] = {
     PoleTide.name: PoleTide,
 }
 
-__all__ = ["Displacement", "DISPLACEMENT_MODELS"]
+__all__ = ["DISPLACEMENT_MODELS"]
