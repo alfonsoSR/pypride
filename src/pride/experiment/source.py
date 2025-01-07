@@ -32,6 +32,8 @@ class Source:
         )
         setattr(self, "_spice_id", spice_id)
         setattr(self, "_exp", None)
+        setattr(self, "__az", None)
+        setattr(self, "__el", None)
 
         return None
 
@@ -114,135 +116,151 @@ class Source:
     def __repr__(self) -> str:
         return f"{self.name:10s}: {super().__repr__()}"
 
-    def azel_from(self, station: "Station", epoch: "time.Time") -> Any:
-        """Calculate azimuth and elevation as seen from a station
+    @property
+    def az(self) -> np.ndarray:
 
-        :param station: Station from which the source is observed
-        :param epoch: Observation epochs
-        :return: Azimuth and elevation of the source as numpy arrays
-        """
+        if getattr(self, "__az") is None:
+            log.error(f"Azimuth not calculated for {self.name} source")
+            exit(1)
+        return getattr(self, "__az")
 
-        if self.type == SourceType.NearField:
-            self.__spacecraft_azel(station, epoch)
-        else:
-            print(f"{self.name} is a calibrator")
+    @property
+    def el(self) -> np.ndarray:
 
-        return None
+        if getattr(self, "__el") is None:
+            log.error(f"Elevation not calculated for {self.name} source")
+            exit(1)
+        return getattr(self, "__el")
 
-    def __spacecraft_azel(self, station: "Station", epoch: "time.Time"):
+    # def azel_from(self, station: "Station", epoch: "time.Time") -> Any:
+    #     """Calculate azimuth and elevation as seen from a station
 
-        clight = spice.clight() * 1e3
+    #     :param station: Station from which the source is observed
+    #     :param epoch: Observation epochs
+    #     :return: Azimuth and elevation of the source as numpy arrays
+    #     """
 
-        # Calculate station coordinates at observation epochs
-        xsta_gcrf = station.location(epoch, frame="icrf")
-        sta_r_earth = xsta_gcrf
-        cstate_sta = nt.CartesianState(*xsta_gcrf.T, *(0.0 * xsta_gcrf.T))
+    #     if self.type == SourceType.NearField:
+    #         self.__spacecraft_azel(station, epoch)
+    #     else:
+    #         print(f"{self.name} is a calibrator")
 
-        # Initialize light-time between target and station
-        et: np.ndarray = (epoch.tdb - J2000.tdb).to("s").value  # type: ignore
-        xsc_gcrf = (
-            np.array(
-                spice.spkpos(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
-            )
-            * 1e3
-        )
-        lt_0 = np.linalg.norm(xsc_gcrf - xsta_gcrf, axis=1) / clight
-        epoch_tx0 = epoch.tdb - time.TimeDelta(lt_0, format="sec")
+    #     return None
 
-        # Initialize light-time container
-        lt_i = np.zeros_like(lt_0)
-        ni = 0
-        precision = 1e-12
-        nmax = 3
+    # def __spacecraft_azel(self, station: "Station", epoch: "time.Time"):
 
-        # Get GM of celestial bodies
-        bodies = (
-            "sun",
-            "mercury",
-            "venus",
-            "earth",
-            "moon",
-            "mars",
-            "jupiter_barycenter",
-            "saturn_barycenter",
-            "uranus_barycenter",
-            "neptune_barycenter",
-        )
-        bodies_gm = (
-            np.array([spice.bodvrd(body, "GM", 1)[1][0] for body in bodies])
-            * 1e9
-        )
+    #     clight = spice.clight() * 1e3
 
-        while np.any(np.abs(lt_0 - lt_i) > precision) and (ni < nmax):
+    #     # Calculate station coordinates at observation epochs
+    #     xsta_gcrf = station.location(epoch, frame="icrf")
+    #     sta_r_earth = xsta_gcrf
+    #     cstate_sta = nt.CartesianState(*xsta_gcrf.T, *(0.0 * xsta_gcrf.T))
 
-            # Update light-time
-            lt_i = lt_0
-            epoch_tx = epoch.tdb - time.TimeDelta(lt_i, format="sec")
-            dt = (epoch_tx.tdb - epoch_tx0.tdb).to("s").value  # type: ignore
+    #     # Initialize light-time between target and station
+    #     et: np.ndarray = (epoch.tdb - J2000.tdb).to("s").value  # type: ignore
+    #     xsc_gcrf = (
+    #         np.array(
+    #             spice.spkpos(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
+    #         )
+    #         * 1e3
+    #     )
+    #     lt_0 = np.linalg.norm(xsc_gcrf - xsta_gcrf, axis=1) / clight
+    #     epoch_tx0 = epoch.tdb - time.TimeDelta(lt_0, format="sec")
 
-            # Calculate target's position wrt station at TX epoch
-            et = (epoch_tx.tdb - J2000.tdb).to("s").value  # type: ignore
-            s_sc_earth_tx = nt.CartesianState(
-                *np.array(
-                    spice.spkezr(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
-                ).T
-                * 1e3
-            )
-            s_sta_sc_tx = cstate_sta - s_sc_earth_tx
-            r01 = s_sta_sc_tx.r_vec.T
-            r01_mag = s_sta_sc_tx.r_mag
-            r0 = s_sc_earth_tx.r_vec.T
-            v0 = s_sc_earth_tx.v_vec.T
+    #     # Initialize light-time container
+    #     lt_i = np.zeros_like(lt_0)
+    #     ni = 0
+    #     precision = 1e-12
+    #     nmax = 3
 
-            # Get state of celestial bodies at TX epoch
-            bodies_cstate = np.array(
-                [
-                    np.array(spice.spkezr(body, et, "J2000", "NONE", "SSB")[0])
-                    * 1e3
-                    for body in bodies
-                ]
-            )
-            rb = bodies_cstate[:, :, :3]
-            vb = bodies_cstate[:, :, 3:]
+    #     # Get GM of celestial bodies
+    #     bodies = (
+    #         "sun",
+    #         "mercury",
+    #         "venus",
+    #         "earth",
+    #         "moon",
+    #         "mars",
+    #         "jupiter_barycenter",
+    #         "saturn_barycenter",
+    #         "uranus_barycenter",
+    #         "neptune_barycenter",
+    #     )
+    #     bodies_gm = (
+    #         np.array([spice.bodvrd(body, "GM", 1)[1][0] for body in bodies])
+    #         * 1e9
+    #     )
 
-            # Calculate terms of relativistic correction
-            r0b = r0[None, :, :] - (rb - dt[None, :, None] * vb)
-            r0b_mag = np.linalg.norm(r0b, axis=-1)
-            r1b = sta_r_earth[None, :, :] - rb
-            r1b_mag = np.linalg.norm(r1b, axis=-1)
-            r01b_mag = np.linalg.norm(r1b - r0b, axis=-1)
+    #     while np.any(np.abs(lt_0 - lt_i) > precision) and (ni < nmax):
 
-            # Calculate relativistic correction
-            gmc = 2.0 * bodies_gm[:, None] / (clight * clight)
-            rlt = np.sum(
-                (gmc / clight)
-                * np.log(
-                    (r0b_mag + r1b_mag + r01b_mag + gmc)
-                    / (r0b_mag + r1b_mag - r01b_mag + gmc)
-                ),
-                axis=0,
-            )
+    #         # Update light-time
+    #         lt_i = lt_0
+    #         epoch_tx = epoch.tdb - time.TimeDelta(lt_i, format="sec")
+    #         dt = (epoch_tx.tdb - epoch_tx0.tdb).to("s").value  # type: ignore
 
-            # Update light-time with relativistic correction
-            denom = 1.0 - (np.sum((r01.T * v0.T), axis=0) / (clight * r01_mag))
-            lt_0 -= (lt_0 - r01_mag / clight - rlt) / denom
+    #         # Calculate target's position wrt station at TX epoch
+    #         et = (epoch_tx.tdb - J2000.tdb).to("s").value  # type: ignore
+    #         s_sc_earth_tx = nt.CartesianState(
+    #             *np.array(
+    #                 spice.spkezr(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
+    #             ).T
+    #             * 1e3
+    #         )
+    #         s_sta_sc_tx = cstate_sta - s_sc_earth_tx
+    #         r01 = s_sta_sc_tx.r_vec.T
+    #         r01_mag = s_sta_sc_tx.r_mag
+    #         r0 = s_sc_earth_tx.r_vec.T
+    #         v0 = s_sc_earth_tx.v_vec.T
 
-            # Update TX epoch and counter
-            epoch_tx = epoch.tdb - time.TimeDelta(lt_0, format="sec")
-            ni += 1
+    #         # Get state of celestial bodies at TX epoch
+    #         bodies_cstate = np.array(
+    #             [
+    #                 np.array(spice.spkezr(body, et, "J2000", "NONE", "SSB")[0])
+    #                 * 1e3
+    #                 for body in bodies
+    #             ]
+    #         )
+    #         rb = bodies_cstate[:, :, :3]
+    #         vb = bodies_cstate[:, :, 3:]
 
-        # Calculate position of target wrt station at TX epoch
-        et = (epoch_tx.tdb - J2000.tdb).to("s").value  # type: ignore
-        s_sc_earth_tx = nt.CartesianState(
-            *np.array(
-                spice.spkezr(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
-            ).T
-            * 1e3
-        )
-        s_sc_sta_tx = s_sc_earth_tx - cstate_sta
+    #         # Calculate terms of relativistic correction
+    #         r0b = r0[None, :, :] - (rb - dt[None, :, None] * vb)
+    #         r0b_mag = np.linalg.norm(r0b, axis=-1)
+    #         r1b = sta_r_earth[None, :, :] - rb
+    #         r1b_mag = np.linalg.norm(r1b, axis=-1)
+    #         r01b_mag = np.linalg.norm(r1b - r0b, axis=-1)
 
-        print((epoch_tx.tdb - epoch.tdb).to("s").value)
+    #         # Calculate relativistic correction
+    #         gmc = 2.0 * bodies_gm[:, None] / (clight * clight)
+    #         rlt = np.sum(
+    #             (gmc / clight)
+    #             * np.log(
+    #                 (r0b_mag + r1b_mag + r01b_mag + gmc)
+    #                 / (r0b_mag + r1b_mag - r01b_mag + gmc)
+    #             ),
+    #             axis=0,
+    #         )
 
-        exit(0)
+    #         # Update light-time with relativistic correction
+    #         denom = 1.0 - (np.sum((r01.T * v0.T), axis=0) / (clight * r01_mag))
+    #         lt_0 -= (lt_0 - r01_mag / clight - rlt) / denom
 
-        return 0
+    #         # Update TX epoch and counter
+    #         epoch_tx = epoch.tdb - time.TimeDelta(lt_0, format="sec")
+    #         ni += 1
+
+    #     # Calculate position of target wrt station at TX epoch
+    #     et = (epoch_tx.tdb - J2000.tdb).to("s").value  # type: ignore
+    #     s_sc_earth_tx = nt.CartesianState(
+    #         *np.array(
+    #             spice.spkezr(self.spice_id, et, "J2000", "NONE", "EARTH")[0]
+    #         ).T
+    #         * 1e3
+    #     )
+    #     s_sc_sta_tx = s_sc_earth_tx - cstate_sta
+
+    #     print((epoch_tx.tdb - epoch.tdb).to("s").value)
+
+    #     exit(0)
+
+    #     return 0
