@@ -5,9 +5,9 @@ from ..logger import log
 
 if TYPE_CHECKING:
     from .experiment import Experiment
-    from .station import Station
     from .source import Source
     from ..types import Band
+    from .baseline import Baseline
 
 
 class Observation:
@@ -22,14 +22,14 @@ class Observation:
 
     def __init__(
         self,
-        station: "Station",
+        baseline: "Baseline",
         source: "Source",
         band: "Band",
         tstamps: list[datetime.datetime],
     ) -> None:
         """Initialize observation
 
-        :param station: Station of the baseline from which the observation was performed
+        :param Baseline: Baseline from which the observation was performed
         :param source: Source object representing the target
         :param band: Frequency band in which the source was detected
         :param tstamps: List of UTC epochs in which the source was detected
@@ -42,11 +42,12 @@ class Observation:
         self.tstamps = time.Time(
             sorted(tstamps),
             scale="utc",
-            location=station.tectonic_corrected_location(_tstamps),
+            location=baseline.station.tectonic_corrected_location(_tstamps),
         )
+        self.baseline = baseline
 
         # Optional attributes
-        setattr(self, "_exp", getattr(station, "_exp"))
+        setattr(self, "_exp", getattr(baseline.station, "_exp"))
 
         return None
 

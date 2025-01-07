@@ -239,7 +239,7 @@ class Experiment:
             for source_id in observation_bands[baseline_id]:
                 _baselines[baseline_id].add_observation(
                     Observation(
-                        _baselines[baseline_id].station,
+                        _baselines[baseline_id],
                         self.sources[source_id],
                         observation_bands[baseline_id][source_id],
                         observation_tstamps[baseline_id][source_id],
