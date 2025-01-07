@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from .source import Source
     from ..types import Band
     from .baseline import Baseline
+    import numpy as np
 
 
 class Observation:
@@ -48,6 +49,8 @@ class Observation:
 
         # Optional attributes
         setattr(self, "_exp", getattr(baseline.station, "_exp"))
+        setattr(self, "__icrf2itrf", None)
+        setattr(self, "__seu2itrf", None)
 
         return None
 
@@ -58,3 +61,23 @@ class Observation:
             log.error(f"Experiment not set for {self.source.name} observation")
             exit(1)
         return getattr(self, "_exp")
+
+    @property
+    def icrf2itrf(self) -> "np.ndarray":
+
+        if getattr(self, "__icrf2itrf") is None:
+            log.error(
+                f"ICRF to ITRF transformation not found for {self.source.name}"
+            )
+            exit(0)
+        return getattr(self, "__icrf2itrf")
+
+    @property
+    def seu2itrf(self) -> "np.ndarray":
+
+        if getattr(self, "__seu2itrf") is None:
+            log.error(
+                f"SEU to ITRF transformation not found for {self.source.name}"
+            )
+            exit(0)
+        return getattr(self, "__seu2itrf")

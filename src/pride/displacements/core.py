@@ -36,7 +36,7 @@ class Displacement:
     @abstractmethod
     def load_resources(
         self, epoch: "time.Time", shared: dict[str, Any]
-    ) -> None:
+    ) -> dict[str, Any]:
         log.error(
             f"Method load_resources not implemented for {self.name} displacement"
         )

@@ -247,7 +247,7 @@ class Experiment:
                 )
 
             # Group observation epochs of the baseline
-            _baselines[baseline_id].update_time_stamps()
+            _baselines[baseline_id].update_with_observations()
 
         return list(_baselines.values())
 
