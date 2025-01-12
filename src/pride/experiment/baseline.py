@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from ..logger import log
 from astropy import time
 import numpy as np
@@ -6,7 +6,6 @@ from .. import coordinates as coord
 from scipy import interpolate
 
 if TYPE_CHECKING:
-    from .experiment import Experiment
     from .station import Station
     from .observation import Observation
 
@@ -24,52 +23,67 @@ class Baseline:
     :param exp: Experiment object to which the baseline belongs
     """
 
+    __slots__ = (
+        "center",
+        "station",
+        "observations",
+        "exp",
+        "tstamps",
+        "a_tstamps",
+        "eops",
+        "a_eops",
+        "icrf2itrf",
+        "a_icrf2itrf",
+        "dot_icrf2itrf",
+        "seu2itrf",
+        "a_seu2itrf",
+        "lat",
+        "a_lat",
+        "lon",
+        "a_lon",
+    )
+
     def __init__(self, center: "Station", station: "Station") -> None:
 
         self.center = center
         self.station = station
         self.observations: list["Observation"] = []
+        self.exp = self.station.exp
 
         # Optional attributes
-        setattr(self, "_exp", getattr(station, "_exp"))
-        setattr(self, "__tstamps", None)
-        setattr(self, "__eops", None)
-        setattr(self, "__icrf2itrf", None)
-        setattr(self, "__seu2itrf", None)
-        setattr(self, "__lat", None)
-        setattr(self, "__lon", None)
+        self.tstamps: time.Time = NotImplemented
+        self.a_tstamps: time.Time = NotImplemented
+        self.eops: np.ndarray = NotImplemented
+        self.a_eops: np.ndarray = NotImplemented
+        self.icrf2itrf: np.ndarray = NotImplemented
+        self.a_icrf2itrf: np.ndarray = NotImplemented
+        self.dot_icrf2itrf: np.ndarray = NotImplemented
+        self.seu2itrf: np.ndarray = NotImplemented
+        self.a_seu2itrf: np.ndarray = NotImplemented
+        self.lat: np.ndarray = NotImplemented
+        self.a_lat: np.ndarray = NotImplemented
+        self.lon: np.ndarray = NotImplemented
+        self.a_lon: np.ndarray = NotImplemented
 
         return None
 
-    @property
-    def exp(self) -> "Experiment":
+    def __getattribute__(self, name: str) -> Any:
 
-        if getattr(self, "_exp") is None:
-            log.error(
-                "Experiment not set for"
-                f" {self.center.name}-{self.station.name} baseline"
-            )
-            exit(1)
-        return getattr(self, "_exp")
+        val = super().__getattribute__(name)
+        if val is NotImplemented:
+            raise AttributeError(f"Attribute {name} not set for {self.id}")
+        return val
 
     @property
     def id(self) -> str:
         return f"{self.center.name}-{self.station.name}"
 
-    def __str__(self) -> str:
-        return self.id
-
-    @property
-    def tstamps(self) -> "time.Time":
-
-        if getattr(self, "__tstamps") is None:
-            log.error(f"Time stamps not found for baseline {self}")
-            exit(0)
-        return getattr(self, "__tstamps")
-
     @property
     def nobs(self) -> int:
         return len(self.observations)
+
+    def __str__(self) -> str:
+        return self.id
 
     def add_observation(self, observation: "Observation") -> None:
         """Add observation to baseline"""
@@ -77,106 +91,76 @@ class Baseline:
         self.observations.append(observation)
         return None
 
-    # def update_time_stamps(self) -> None:
-
-    #     _tstamps = time.Time(
-    #         [observation.tstamps for observation in self.observations],
-    #         scale="utc",
-    #     ).sort()
-    #     setattr(self, "__tstamps", _tstamps)
-
-    #     return None
-
     def update_with_observations(self) -> None:
         """Update baseline object with data derived from observations"""
 
         log.debug(f"Updating {self.id} baseline with observations")
 
-        # Merge time stamps from all the observations
-        # NOTE: They inherit the location data from the observation
-        tstamps: time.Time = time.Time(
+        # Merge time stamps of all the observations
+        __tstamps: time.Time = time.Time(
             [observation.tstamps for observation in self.observations],
             scale="utc",
         ).sort()  # type: ignore
+        self.tstamps = time.Time(
+            __tstamps,
+            location=self.station.tectonic_corrected_location(__tstamps),
+        )
 
-        # Retrieve geodetic coordinates of the station from time stamps
-        if tstamps.location is None:
-            log.error(
-                f"Failed to update {self.id} baseline with observations: "
-                "Location data is missing from observation time-stamps"
-            )
-            exit(1)
-        geodetic = tstamps.location.to_geodetic("GRS80")
-        lat = np.array(geodetic.lat.rad, dtype=float)
-        lon = np.array(geodetic.lon.rad, dtype=float)
+        # Augment time stamps with +/- 1 second around each epoch
+        __augmented_tstamps: time.Time = (
+            __tstamps[:, None]
+            + time.TimeDelta([-1, 0, 1], format="sec")[None, :]
+        ).ravel()  # type: ignore
+        self.a_tstamps = time.Time(
+            __augmented_tstamps,
+            scale="utc",
+            location=self.station.tectonic_corrected_location(
+                __augmented_tstamps
+            ),
+        )
+        assert self.a_tstamps.location is not None
 
-        # Calculate ICRF-ITRF and SEU-ITRF rotation matrices
-        eops = self.exp.eops.at_epoch(tstamps, unit="arcsec")
-        icrf2itrf = coord.icrf2itrf(eops, tstamps)
-        seu2itrf = coord.seu2itrf(lat, lon)
+        # Calculate geodetic coordinates of station
+        a_geodetic = self.a_tstamps.location.to_geodetic("GRS80")
+        self.a_lat = np.array(a_geodetic.lat.rad, dtype=float)
+        self.a_lon = np.array(a_geodetic.lon.rad, dtype=float)
+
+        # Calculate rotation matrices
+        self.a_eops = self.exp.eops.at_epoch(self.a_tstamps, unit="arcsec")
+        self.a_icrf2itrf = coord.icrf2itrf(self.a_eops, self.a_tstamps)
+        self.a_seu2itrf = coord.seu2itrf(self.a_lat, self.a_lon)
+
+        # Calculate derivative of ICRF to ITRF rotation matrix
+        dt_tdb: np.ndarray = (
+            (self.a_tstamps.tdb[2::3] - self.a_tstamps.tdb[0::3])
+            .to("s")  # type: ignore
+            .value
+        )
+        diff_icrf2itrf = self.a_icrf2itrf[2::3] - self.a_icrf2itrf[0::3]
+        self.dot_icrf2itrf = diff_icrf2itrf / dt_tdb[:, None, None]
+
+        # Get attributes at observation epochs
+        self.eops = self.a_eops[1::3]
+        self.icrf2itrf = self.a_icrf2itrf[1::3]
+        self.seu2itrf = self.a_seu2itrf[1::3]
+        self.lat = self.a_lat[1::3]
+        self.lon = self.a_lon[1::3]
 
         # Update observations with calculated data
         for observation in self.observations:
 
             # Get the index of the time stamps associated with the observation
             flags = np.sum(
-                observation.tstamps[None, :] == tstamps[:, None],
-                axis=1,
+                observation.tstamps[:, None] == self.tstamps[None, :],
+                axis=0,
                 dtype=bool,
             )
 
-            setattr(observation, "__icrf2itrf", icrf2itrf[flags])
-            setattr(observation, "__seu2itrf", seu2itrf[flags])
-
-        # Update baseline with calculated data
-        setattr(self, "__tstamps", tstamps)
-        setattr(self, "__eops", eops)
-        setattr(self, "__icrf2itrf", icrf2itrf)
-        setattr(self, "__seu2itrf", seu2itrf)
-        setattr(self, "__lat", lat)
-        setattr(self, "__lon", lon)
+            observation.icrf2itrf = self.icrf2itrf[flags]
+            observation.seu2itrf = self.seu2itrf[flags]
+            observation.dot_icrf2itrf = self.dot_icrf2itrf[flags]
 
         return None
-
-    @property
-    def eops(self) -> np.ndarray:
-
-        if getattr(self, "__eops") is None:
-            log.error(f"EOPs not found for {self}")
-            exit(0)
-        return getattr(self, "__eops")
-
-    @property
-    def icrf2itrf(self) -> np.ndarray:
-
-        if getattr(self, "__icrf2itrf") is None:
-            log.error(f"ICRF to ITRF transformation not found for {self}")
-            exit(0)
-        return getattr(self, "__icrf2itrf")
-
-    @property
-    def seu2itrf(self) -> np.ndarray:
-
-        if getattr(self, "__seu2itrf") is None:
-            log.error(f"SEU to ITRF transformation not found for {self}")
-            exit(0)
-        return getattr(self, "__seu2itrf")
-
-    @property
-    def lat(self) -> np.ndarray:
-
-        if getattr(self, "__lat") is None:
-            log.error(f"Latitude not found for {self}")
-            exit(0)
-        return getattr(self, "__lat")
-
-    @property
-    def lon(self) -> np.ndarray:
-
-        if getattr(self, "__lon") is None:
-            log.error(f"Longitude not found for {self}")
-            exit(0)
-        return getattr(self, "__lon")
 
     def update_station_with_geophysical_displacements(self) -> None:
 
@@ -188,55 +172,55 @@ class Baseline:
         # Shared resources
         shared_resources = {
             "station_names": self.station.possible_names,
-            "eops": self.eops,
-            "icrf2itrf": self.icrf2itrf,
-            "seu2itrf": self.seu2itrf,
-            "lat": self.lat,
-            "lon": self.lon,
-            "xsta_itrf": self.station.location(self.tstamps),
+            "eops": self.a_eops,
+            "icrf2itrf": self.a_icrf2itrf,
+            "seu2itrf": self.a_seu2itrf,
+            "lat": self.a_lat,
+            "lon": self.a_lon,
+            "xsta_itrf": self.station.location(self.a_tstamps),
         }
 
-        # Update tectonic corrected position with displacements
-        xsta_itrf = shared_resources["xsta_itrf"]
-        for model in self.exp.displacement_models:
-            resources = model.load_resources(self.tstamps, shared_resources)
-            xsta_itrf += model.calculate(self.tstamps, resources)
-
-        # Convert corrected position to ICRF
+        # Station position at reference epochs [Tectonic corrected]
+        xsta_itrf = shared_resources["xsta_itrf"][1::3]
         xsta_icrf = (
             self.icrf2itrf.swapaxes(-1, -2) @ xsta_itrf[:, :, None]
         ).squeeze()
 
-        # Generate interpolation polynomials
-        # NOTE: I checked the difference between xsta and the interpolated
-        # locations for GR035 and it is never bigger than 1e-9 m for any of the
-        # stations. This is orders of magnitude smaller than any of the
-        # displacements we are considering, so interpolating should be safe.
-        _interp_location_itrf = {
-            "x": interpolate.interp1d(
-                self.tstamps.jd, xsta_itrf[:, 0], kind="cubic"
-            ),
-            "y": interpolate.interp1d(
-                self.tstamps.jd, xsta_itrf[:, 1], kind="cubic"
-            ),
-            "z": interpolate.interp1d(
-                self.tstamps.jd, xsta_itrf[:, 2], kind="cubic"
-            ),
-        }
-        setattr(self, "_interp_location_itrf", _interp_location_itrf)
+        # Station velocity at reference epochs
+        vsta_itrf = np.zeros_like(xsta_itrf)
+        vsta_icrf = (
+            self.dot_icrf2itrf.swapaxes(-1, -2) @ xsta_itrf[:, :, None]
+        ).squeeze()
 
-        _interp_location_icrf = {
-            "x": interpolate.interp1d(
-                self.tstamps.jd, xsta_icrf[:, 0], kind="cubic"
-            ),
-            "y": interpolate.interp1d(
-                self.tstamps.jd, xsta_icrf[:, 1], kind="cubic"
-            ),
-            "z": interpolate.interp1d(
-                self.tstamps.jd, xsta_icrf[:, 2], kind="cubic"
-            ),
-        }
-        setattr(self.station, "_interp_location_icrf", _interp_location_icrf)
+        # Update positions and velocities with displacements
+        for model in self.exp.displacement_models:
+
+            # Calculate augmented displacement in ICRF and ITRF
+            resources = model.load_resources(self.a_tstamps, shared_resources)
+            a_dx_itrf = model.calculate(self.a_tstamps, resources)
+            a_dx_icrf = (
+                self.a_icrf2itrf.swapaxes(-1, -2) @ a_dx_itrf[:, :, None]
+            ).squeeze()
+
+            # Update positions and velocities
+            xsta_itrf += a_dx_itrf[1::3]
+            xsta_icrf += a_dx_icrf[1::3]
+            vsta_itrf += (a_dx_itrf[2::3] - a_dx_itrf[0::3]) * 0.5
+            vsta_icrf += (a_dx_icrf[2::3] - a_dx_icrf[0::3]) * 0.5
+
+        # Generate interpolation polynomials
+        self.station._interp_xsta_itrf = interpolate.interp1d(
+            self.tstamps.jd, xsta_itrf, kind="cubic", axis=0
+        )
+        self.station._interp_xsta_icrf = interpolate.interp1d(
+            self.tstamps.jd, xsta_icrf, kind="cubic", axis=0
+        )
+        self.station._interp_vsta_itrf = interpolate.interp1d(
+            self.tstamps.jd, vsta_itrf, kind="cubic", axis=0
+        )
+        self.station._interp_vsta_icrf = interpolate.interp1d(
+            self.tstamps.jd, vsta_icrf, kind="cubic", axis=0
+        )
 
         # Update geophysical corrections flag for station
         self.station.has_geophysical_corrections = True

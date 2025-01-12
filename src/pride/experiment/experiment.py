@@ -6,16 +6,15 @@ from ..io import Setup, Vex, load_catalog
 from ..logger import log
 from astropy import time
 import datetime
-import numpy as np
-from .. import utils
 from ..types import ObservationMode, Band
 from ..coordinates import EOP
 from ..displacements import DISPLACEMENT_MODELS
 from ..delays import DELAY_MODELS
-from .source import Source
+from .source import Source, NearFieldSource, FarFieldSource
 from .station import Station
 from .baseline import Baseline
 from .observation import Observation
+import math
 
 if TYPE_CHECKING:
     from ..displacements.core import Displacement
@@ -59,10 +58,38 @@ class Experiment:
         self.eops = EOP.from_experiment(self)
 
         # Load sources
-        self.sources: dict[str, "Source"] = {
-            name: Source.from_experiment(name, self)
-            for name in self.vex["SOURCE"]
-        }
+        self.sources: dict[str, "Source"] = {}
+        for name, source_info in self.vex["SOURCE"].items():
+
+            # Ensure type information is available in VEX file
+            if "source_type" not in source_info:
+                log.error(
+                    f"Failed to generate {name} source: "
+                    "Type information missing from VEX file"
+                )
+                exit(1)
+
+            # Initialize based on type
+            match source_info["source_type"]:
+                case "calibrator":
+                    self.sources[name] = FarFieldSource.from_experiment(
+                        name, self
+                    )
+                case "target":
+                    self.sources[name] = NearFieldSource.from_experiment(
+                        name, self
+                    )
+                case _:
+                    log.error(
+                        f"Failed to generate {name} source: "
+                        f"Invalid type {source_info['source_type']}"
+                    )
+                    exit(1)
+
+        # self.sources: dict[str, "Source"] = {
+        #     name: Source.from_experiment(name, self)
+        #     for name in self.vex["SOURCE"]
+        # }
 
         # Define phase center
         self.phase_center = Station.from_experiment(
@@ -195,28 +222,47 @@ class Experiment:
                 scan_duration = (dt_end - dt_start).total_seconds()
 
                 # Define step size based on configuration file
-                nobs = scan_duration / self.setup.general["scan_step"] + 1
-                scan_step = 1 if nobs < 10 else self.setup.general["scan_step"]
+                default_step: float = self.setup.internal["default_scan_step"]
+                min_nobs = self.setup.internal["min_obs_per_scan"]
+                min_step = self.setup.internal["min_scan_step"]
+                _scan_step = scan_duration / min_nobs
+                if _scan_step > default_step:
+                    nobs = math.ceil(scan_duration / default_step)
+                    scan_step = scan_duration / nobs
+                elif min_step <= _scan_step <= default_step:
+                    nobs = math.ceil(scan_duration / _scan_step)
+                    scan_step = scan_duration / nobs
+                else:
+                    nobs = math.floor(scan_duration / min_step)
+                    scan_step = scan_duration / nobs
+                    log.warning(f"Using minimum step size for scan {scan_id}")
+
+                # _nobs = scan_duration / default_step + 1
+                # __step = 1 if _nobs < 10 else default_step
 
                 # Calculate timestamps
-                if np.modf(scan_duration / scan_step)[0] < 1e-9:
-                    nobs = int(scan_duration / scan_step) + 1
-                else:
-                    if self.setup.general["force_scan_step"]:
-                        nobs = int(scan_duration / scan_step) + 1
-                    else:
-                        log.debug(
-                            f"Adjusting discretization step for scan {scan_id} "
-                            f"Duration {scan_duration} s, step {scan_step} s"
-                        )
-                        facs = utils.factors(int(scan_duration))
-                        pos = max(0, int(np.searchsorted(facs, scan_step)) - 1)
-                        scan_step = facs[pos]
-                        nobs = int(scan_duration / scan_step) + 1
                 scan_step = datetime.timedelta(seconds=scan_step)
                 scan_tstamps = [scan_start + i * scan_step for i in range(nobs)]
-                if self.setup.general["force_scan_step"]:
-                    scan_tstamps.append(scan_end)
+                scan_tstamps.append(scan_end)
+
+                # if np.modf(scan_duration / scan_step)[0] < 1e-9:
+                #     nobs = int(scan_duration / scan_step) + 1
+                # else:
+                #     if self.setup.general["force_scan_step"]:
+                #         nobs = int(scan_duration / scan_step) + 1
+                #     else:
+                #         log.debug(
+                #             f"Adjusting discretization step for scan {scan_id} "
+                #             f"Duration {scan_duration} s, step {scan_step} s"
+                #         )
+                #         facs = utils.factors(int(scan_duration))
+                #         pos = max(0, int(np.searchsorted(facs, scan_step)) - 1)
+                #         scan_step = facs[pos]
+                #         nobs = int(scan_duration / scan_step) + 1
+                # scan_step = datetime.timedelta(seconds=scan_step)
+                # scan_tstamps = [scan_start + i * scan_step for i in range(nobs)]
+                # if self.setup.general["force_scan_step"]:
+                #     scan_tstamps.append(scan_end)
 
                 # Update observation data
                 if _code not in observation_bands:
@@ -246,8 +292,8 @@ class Experiment:
                     )
                 )
 
-            # Group observation epochs of the baseline
-            _baselines[baseline_id].update_with_observations()
+            # # Group observation epochs of the baseline
+            # _baselines[baseline_id].update_with_observations()
 
         return list(_baselines.values())
 
