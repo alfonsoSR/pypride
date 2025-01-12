@@ -1,11 +1,5 @@
-from functools import reduce
-from .external.iers import interp
-from astropy.utils import iers
 import numpy as np
-import erfa
-from .logger import log
-from astropy import time, units
-from typing import Literal
+from astropy import units
 
 
 def eops_arcsec2rad(eops: np.ndarray) -> np.ndarray:

@@ -1,6 +1,5 @@
 from typing import TYPE_CHECKING, Any
 from astropy import coordinates, time
-from nastro import types as nt
 from ..logger import log
 import numpy as np
 import spiceypy as spice

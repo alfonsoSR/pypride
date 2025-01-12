@@ -1,13 +1,13 @@
 from typing import Any, TYPE_CHECKING
 from ..logger import log
-from abc import abstractmethod
+from abc import abstractmethod, ABCMeta
 
 if TYPE_CHECKING:
     from ..experiment.experiment import Experiment
     from astropy import time
 
 
-class Displacement:
+class Displacement(metaclass=ABCMeta):
     """Base class for implementation of geophysical displacements
 
     Used to correct the position of stations for geophysical phenomena
