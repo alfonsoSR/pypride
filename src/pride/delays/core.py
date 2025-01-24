@@ -1,4 +1,4 @@
-from abc import abstractmethod
+from abc import abstractmethod, ABCMeta
 from typing import TYPE_CHECKING, Any
 from ..logger import log
 
@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     from ..experiment.experiment import Experiment
 
 
-class Delay:
+class Delay(metaclass=ABCMeta):
     """Base class for implementation of delay models
 
     :param name: Unique name that identifies the delay model

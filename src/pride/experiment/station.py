@@ -5,6 +5,7 @@ from astropy import time, coordinates
 import numpy as np
 from .. import coordinates as coord
 from scipy import interpolate
+import spiceypy as spice
 
 if TYPE_CHECKING:
     from .experiment import Experiment
@@ -186,7 +187,12 @@ class Station:
         """
 
         if not self.has_tectonic_correction:
-            raise NotImplementedError("Not supposed to happen")
+            if not self.is_phase_center:
+                raise NotImplementedError("Not supposed to happen")
+            if not self.name == "GEOCENTR":
+                raise NotImplementedError("Not supposed to happen")
+
+            return np.zeros((len(epoch.jd), 3), dtype=float)  # type: ignore
 
         if not self.has_geophysical_corrections:
 

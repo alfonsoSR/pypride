@@ -31,10 +31,11 @@ class SolidTide(Displacement):
         # Position of the Sun and Moon in Earth-centered ICRF
         et: np.ndarray = (epoch.tdb - J2000.tdb).sec  # type: ignore
         xsun_icrf = (
-            np.array(spice.spkpos("sun", et, "J2000", "CN", "earth")[0]) * 1e3
+            np.array(spice.spkpos("sun", et, "J2000", "NONE", "earth")[0]) * 1e3
         )
         xmoon_icrf = (
-            np.array(spice.spkpos("moon", et, "J2000", "CN", "earth")[0]) * 1e3
+            np.array(spice.spkpos("moon", et, "J2000", "NONE", "earth")[0])
+            * 1e3
         )
 
         # Convert position of the Sun and Moon to ITRF

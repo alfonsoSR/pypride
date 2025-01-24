@@ -3,13 +3,14 @@ from astropy import coordinates, time
 from ..logger import log
 import numpy as np
 import spiceypy as spice
-from ..constants import J2000
+from ..constants import J2000, L_C
 from abc import abstractmethod, ABCMeta
 
 if TYPE_CHECKING:
     from .experiment import Experiment
     from ..io import VexContent
     from .observation import Observation
+    from .station import Station
 
 
 class Source(metaclass=ABCMeta):
@@ -104,20 +105,16 @@ class NearFieldSource(Source):
         source.exp = experiment
         return source
 
-    def tx_from_observation(self, obs: "Observation") -> time.Time:
-        """Calculate TX epoch from observation"""
+    def tx_from_rx(self, rx: "time.Time", station: "Station") -> time.Time:
+        """Calculate TX epoch from RX epoch at a station"""
 
         clight = spice.clight() * 1e3
 
         # Calculate GCRF coordinates of station at RX
-        xsta_gcrf_rx = obs.station.location(obs.tstamps, frame="icrf")
+        xsta_gcrf_rx = station.location(rx, frame="icrf")
 
-        # Convert RX epochs to ephemeris time
-        et_rx: np.ndarray = (
-            (obs.tstamps.tdb - J2000.tdb).to("s").value  # type: ignore
-        )
-
-        # Calculate BCRF coordinates of source at RX
+        # Calculate BCRS position of source at RX
+        et_rx: np.ndarray = (rx.tdb - J2000.tdb).to("s").value  # type: ignore
         xsrc_bcrf_rx = (
             np.array(
                 spice.spkpos(self.spice_id, et_rx, "J2000", "NONE", "SSB")[0]
@@ -125,7 +122,7 @@ class NearFieldSource(Source):
             * 1e3
         )
 
-        # Calculate GM and BCRF coordinates of celestial bodies at RX
+        # Calculate GM and BCRS position of celestial bodies at RX
         bodies = self.exp.setup.internal["lt_correction_bodies"]
         bodies_gm = (
             np.array([spice.bodvrd(body, "GM", 1)[1][0] for body in bodies])
@@ -139,8 +136,35 @@ class NearFieldSource(Source):
             ]
         )
 
-        # Calculate BCRF coordinates of station at RX
-        xsta_bcrf_rx = xsta_gcrf_rx + xbodies_bcrf_rx[bodies.index("earth")]
+        # Calculate Newtonian potential of all solar system bodies at geocenter
+        _earth_idx = bodies.index("earth")
+        searth_bcrf_rx = (
+            np.array(spice.spkezr("earth", et_rx, "J2000", "NONE", "SSB")[0])
+            * 1e3
+        )
+        xearth_bcrf_rx = searth_bcrf_rx[:, :3]
+        vearth_bcrf_rx = searth_bcrf_rx[:, 3:]
+        xbodies_gcrf_rx = np.delete(
+            xbodies_bcrf_rx - xearth_bcrf_rx, _earth_idx, axis=0
+        )
+        bodies_gm_noearth = np.delete(bodies_gm, _earth_idx, axis=0)
+        U_earth = np.sum(
+            bodies_gm_noearth[:, None]
+            / np.linalg.norm(xbodies_gcrf_rx, axis=-1),
+            axis=0,
+        )
+
+        # Calculate BCRS position of station at RX
+        xsta_bcrf_rx = (
+            xearth_bcrf_rx
+            + (1.0 - L_C - (U_earth / (clight * clight)))[:, None]
+            * xsta_gcrf_rx
+            - (
+                np.sum(vearth_bcrf_rx.T * xsta_gcrf_rx.T, axis=0)[:, None]
+                * vearth_bcrf_rx
+                / (2.0 * clight * clight)
+            )
+        )
 
         # Calculate relative position of station wrt to celestial bodies at RX
         r1b = xsta_bcrf_rx[None, :, :] - xbodies_bcrf_rx
@@ -148,7 +172,7 @@ class NearFieldSource(Source):
 
         # Initialize light travel time between source and station
         lt_0 = np.linalg.norm(xsta_bcrf_rx - xsrc_bcrf_rx, axis=-1) / clight
-        tx_0: time.Time = obs.tstamps.tdb - time.TimeDelta(lt_0, format="sec")  # type: ignore
+        tx_0: time.Time = rx.tdb - time.TimeDelta(lt_0, format="sec")  # type: ignore
 
         # Initialize variables for iterative estimation of TX
         lt_i = 0.0 * lt_0
@@ -161,7 +185,7 @@ class NearFieldSource(Source):
 
             # Update light travel time and TX
             lt_i = lt_0
-            tx_i = obs.tstamps.tdb - time.TimeDelta(lt_i, format="sec")
+            tx_i = rx.tdb - time.TimeDelta(lt_i, format="sec")
 
             # Convert TX to ephemeris time
             et_tx: np.ndarray = (
@@ -213,7 +237,7 @@ class NearFieldSource(Source):
                 / clight
             )  # (N,)
             lt_0 -= (lt_0 - (r01_mag / clight) - rlt_01) / (1.0 - dot_p01_c)
-            tx_0 = obs.tstamps.tdb - time.TimeDelta(lt_0, format="sec")  # type: ignore
+            tx_0 = rx.tdb - time.TimeDelta(lt_0, format="sec")  # type: ignore
 
             # Update iteration counter
             n_i += 1
@@ -223,7 +247,7 @@ class NearFieldSource(Source):
     def spherical_coordinates(self, obs: "Observation"):
 
         # Calculate TX epochs for observation
-        tx = self.tx_from_observation(obs)
+        tx = self.tx_from_rx(obs.tstamps, obs.station)
 
         # Convert TX and RX epochs to ephemeris time
         et_tx: np.ndarray = (tx.tdb - J2000.tdb).to("s").value  # type: ignore

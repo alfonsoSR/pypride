@@ -76,3 +76,14 @@ class Observation:
             log.error(f"Attribute {name} is not set for observation")
             exit(1)
         return val
+
+    def calculate_delays(self) -> Any:
+
+        log.debug(
+            f"Calculating delays: {self.source.name} source "
+            f"from {self.station.name}"
+        )
+
+        exit(0)
+
+        return NotImplemented

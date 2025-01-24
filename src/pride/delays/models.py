@@ -10,10 +10,12 @@ import gzip
 import numpy as np
 from scipy import interpolate
 from ..types import Antenna
+from ..experiment.source import NearFieldSource, FarFieldSource
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from ..experiment.core import Station
+    from ..experiment.station import Station
+    from ..experiment.observation import Observation
 
 
 class Geometric(Delay):
@@ -98,6 +100,10 @@ class Geometric(Delay):
 
     def load_resources(self) -> dict[str, Any]:
         return {}
+
+    def calculate(self, obs: "Observation") -> Any:
+
+        return NotImplemented
 
 
 class Tropospheric(Delay):
@@ -287,7 +293,7 @@ class Tropospheric(Delay):
 
         resources: dict[str, tuple[str, Any]] = {}
 
-        for baseline in self.exp.baselines.values():
+        for baseline in self.exp.baselines:
 
             # Check if resources are already available for station
             station = baseline.station
