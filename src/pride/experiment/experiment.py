@@ -1,8 +1,8 @@
-from typing import TYPE_CHECKING, Generator
+from typing import TYPE_CHECKING, Generator, Any
 from pathlib import Path
 from contextlib import contextmanager
 import spiceypy as spice
-from ..io import Setup, Vex, load_catalog
+from ..io import Setup, Vex, load_catalog, internal_file, get_target_information
 from ..logger import log
 from astropy import time
 import datetime
@@ -57,8 +57,73 @@ class Experiment:
         # EOPs: For transformations between ITRF and ICRF
         self.eops = EOP.from_experiment(self)
 
+        # Load target information
+        self.target = get_target_information(self.setup.general["target"])
+
         # Load sources
-        self.sources: dict[str, "Source"] = {}
+        self.sources = self.load_sources()
+
+        # Define phase center
+        self.phase_center = Station.from_experiment(
+            self.setup.general["phase_center"], self
+        )
+
+        # Initialize baselines
+        self.baselines = self.initialize_baselines()
+
+        # Initialize delay and displacement models
+        self.requires_spice = False
+        self.displacement_models = self.initialize_displacement_models()
+        self.delay_models = self.initialize_delay_models()
+
+        return None
+
+    def load_sources(self) -> dict[str, "Source"]:
+        """Load sources from VEX file
+
+        Parses the SOURCE section of the VEX file and retrieves the name, type and coordinates of all the sources involved in the experiment. NearFieldSource and FarFieldSource objects are initialized for each source based on the 'source_type' read from the VEX, with the program raising an error if this attribute is not set.
+
+        :return: Dictionary with source name as key and Source object as value.
+        """
+
+        sources: dict[str, "Source"] = {}
+        # nearfield_source_ra: list[str] = []
+        # nearfield_source_dec: list[str] = []
+        # nearfield_source_frame: list[str] = []
+
+        # # Classify sources
+        # for name, source_info in self.vex["SOURCE"].items():
+
+        #     # Ensure type information is available in VEX file
+        #     if "source_type" not in source_info:
+        #         log.error(
+        #             f"Failed to generate {name} source: "
+        #             "Type information missing from VEX file"
+        #         )
+        #         exit(1)
+
+        #     match source_info["source_type"]:
+        #         case "calibrator":
+        #             sources[name] = FarFieldSource.from_experiment(name, self)
+        #         case "target":
+        #             nearfield_source_ra.append(source_info["ra"])
+        #             nearfield_source_dec.append(source_info["dec"])
+        #             nearfield_source_frame.append(
+        #                 source_info["ref_coord_frame"]
+        #             )
+        #         case _:
+        #             log.error(
+        #                 f"Failed to generate {name} source: "
+        #                 f"Invalid type {source_info['source_type']}"
+        #             )
+
+        # # Load near field source
+        # # NOTE: It is assumed that only one spacecraft is observed
+        # for name, source_info in _nearfield_source_data.items():
+
+        #     print(source_info)
+        #     exit(0)
+
         for name, source_info in self.vex["SOURCE"].items():
 
             # Ensure type information is available in VEX file
@@ -69,16 +134,19 @@ class Experiment:
                 )
                 exit(1)
 
-            # Initialize based on type
+            # Ensure that coordinates are given in the right frame
+            if source_info["ref_coord_frame"] != "J2000":
+                raise NotImplementedError(
+                    f"Failed to generate {name} source: "
+                    f"Invalid reference frame {source_info['ref_coord_frame']}"
+                )
+
+            # Initialize far field sources
             match source_info["source_type"]:
                 case "calibrator":
-                    self.sources[name] = FarFieldSource.from_experiment(
-                        name, self
-                    )
+                    sources[name] = FarFieldSource.from_experiment(self, name)
                 case "target":
-                    self.sources[name] = NearFieldSource.from_experiment(
-                        name, self
-                    )
+                    pass  # Initialized later
                 case _:
                     log.error(
                         f"Failed to generate {name} source: "
@@ -86,29 +154,22 @@ class Experiment:
                     )
                     exit(1)
 
-        # self.sources: dict[str, "Source"] = {
-        #     name: Source.from_experiment(name, self)
-        #     for name in self.vex["SOURCE"]
-        # }
-
-        # Define phase center
-        self.phase_center = Station.from_experiment(
-            self.setup.general["phase_center"], self
+        # Initialize near field source
+        sources[self.target["short_name"]] = NearFieldSource.from_experiment(
+            self
         )
 
-        # Initialize delay and displacement models
-        self.requires_spice = False
-        self.displacement_models = self.initialize_displacement_models()
-        self.delay_models = self.initialize_delay_models()
-
-        # Initialize baselines
-        self.baselines = self.initialize_baselines()
-
-        return None
+        return sources
 
     def initialize_displacement_models(self) -> list["Displacement"]:
+        """Initialize displacement models
 
-        log.info("Setting up geophysical displacements")
+        Iterates over the 'Displacements' section of the configuration file and, for each of the names set to 'true', it looks for an equally named class in the 'DISPLACEMENT_MODELS' dictionary. If the class is not found, an error is raised indicating that a requested displacement is not available, otherwise, the displacement is initialized with the experiment. Initialization involves calling the 'ensure_resources' method of the displacement object.
+
+        :return: List of 'empty' (no resources loaded) displacement objects
+        """
+
+        log.info("Initializing displacement models")
 
         displacement_models: list["Displacement"] = []
         for displacement, calculate in self.setup.displacements.items():
@@ -125,11 +186,19 @@ class Experiment:
                 if DISPLACEMENT_MODELS[displacement].requires_spice:
                     self.requires_spice = True
 
+        log.info("Displacement models successfully initialized")
+
         return displacement_models
 
     def initialize_delay_models(self) -> list["Delay"]:
+        """Initialize delay models
 
-        log.info("Setting up delay models...")
+        Iterates over the 'Delays' section of the configuration file and, for each value with 'calculate' set to 'true', it looks for an equally named class in the 'DELAY_MODELS' dictionary. If the class is not found, an error is raised indicating that a requested delay is not available, otherwise, the delay is initialized with the experiment. Initialization involves calling the 'ensure_resources' and 'load_resources' methods of the delay object.
+
+        :return: List of delay objects equiped with resources
+        """
+
+        log.info("Initializing delay models")
 
         _delay_models: list["Delay"] = []
         for delay_id, delay_config in self.setup.delays.items():
@@ -143,26 +212,27 @@ class Experiment:
                 if DELAY_MODELS[delay_id].requires_spice:
                     self.requires_spice = True
 
-        # # Load resources for delay models
-        # raise NotImplementedError(
-        #     "Delay objects should update themselves with resources, not load them into the experiment"
-        # )
-        # for delay in _delay_models:
-        #     delay.load_resources()
-
-        # Save as private property
-        # self.__delays = _delay_models
+        log.info("Delay models successfully initialized")
 
         return _delay_models
 
     def initialize_baselines(self) -> list["Baseline"]:
+        """Initialize baselines
 
-        log.info("Setting up baselines")
+        Parses the STATION section of the VEX file to identify all the observatories potentially involved in the experiment. Checks the names of the antennas against a station catalog and, if necessary, modifies them to ensure that they match the ID used in the external data files of the delay and displacement models. Each station is then used to initialize a Baseline object using the 'phase_center' attribute of the experiment class.
+
+        The program then parses the SCHED section of the VEX file to get the stations, observation mode, source and time window of each scan. The time windows of the scans are discretized according to the step size, and the limits for the number of time stamps specified in the internal configuration file; and then groupped per station and source. This information is then used to initialize Observation objects, which are saved in the 'observations' attribute of each baseline.
+
+        :return: List of baseline objects equipped with observations.
+        """
+
+        log.info("Initializing baselines")
 
         # Load experiment stations
         _experiment_stations = {
             sta: self.vex["STATION"][sta]["ANTENNA"]
             for sta in self.vex["STATION"]
+            if sta not in self.setup.general["ignore_stations"]
         }
 
         # Load station catalog
@@ -181,10 +251,9 @@ class Experiment:
         _baselines: dict[str, "Baseline"] = {
             k: Baseline(self.phase_center, Station.from_experiment(v, self))
             for k, v in reversed(dict(zip(_ids, _names)).items())
-            if k not in self.setup.general["ignore_stations"]
         }
 
-        # Add observations to baselines
+        # Load data about observations
         observation_bands: dict[str, dict[str, "Band"]] = {}
         observation_tstamps: dict[str, dict[str, list[datetime.datetime]]] = {}
         for scan_id, scan_data in self.vex["SCHED"].items():
@@ -201,27 +270,37 @@ class Experiment:
                 )
             source = scan_data.getall("source")[0]
 
+            # Ensure unique name for all near field sources
+            source_type = self.vex["SOURCE"][source]["source_type"]
+            if source_type == "target":
+                source = self.target["short_name"]
+
             for station_data in scan_stations:
 
-                # Retrieve station code and time window
-                _code, _dt_start, _dt_end = station_data[:3]
+                # Retrieve station code and offsets of observation window
+                _station_code, _dt_start, _dt_end = station_data[:3]
+                if _station_code in self.setup.general["ignore_stations"]:
+                    continue
 
-                # Get baseline
-                if _code not in _baselines:
+                # Identify baseline containing the station
+                if _station_code not in _baselines:
                     log.error(
-                        f"Failed to initialize {self.name} experiment: "
-                        f"None of the baselines contains a station with code {_code}"
+                        f"Failed to initialize baselines for {self.name} "
+                        "experiment: No baseline includes "
+                        f"station {_station_code}"
                     )
                     exit(1)
 
-                # Beginning, end and duration of scan
-                dt_start = datetime.timedelta(seconds=int(_dt_start.split()[0]))
-                dt_end = datetime.timedelta(seconds=int(_dt_end.split()[0]))
-                scan_start = base_start + dt_start
-                scan_end = base_start + dt_end
-                scan_duration = (dt_end - dt_start).total_seconds()
+                # Time window of the scan
+                scan_start = base_start + datetime.timedelta(
+                    seconds=int(_dt_start.split()[0])
+                )
+                scan_end = base_start + datetime.timedelta(
+                    seconds=int(_dt_end.split()[0])
+                )
+                scan_duration = (scan_end - scan_start).total_seconds()
 
-                # Define step size based on configuration file
+                # Define step size for scan discretization
                 default_step: float = self.setup.internal["default_scan_step"]
                 min_nobs = self.setup.internal["min_obs_per_scan"]
                 min_step = self.setup.internal["min_scan_step"]
@@ -237,63 +316,39 @@ class Experiment:
                     scan_step = scan_duration / nobs
                     log.warning(f"Using minimum step size for scan {scan_id}")
 
-                # _nobs = scan_duration / default_step + 1
-                # __step = 1 if _nobs < 10 else default_step
-
-                # Calculate timestamps
+                # Discretize scan time window
                 scan_step = datetime.timedelta(seconds=scan_step)
                 scan_tstamps = [scan_start + i * scan_step for i in range(nobs)]
                 scan_tstamps.append(scan_end)
 
-                # if np.modf(scan_duration / scan_step)[0] < 1e-9:
-                #     nobs = int(scan_duration / scan_step) + 1
-                # else:
-                #     if self.setup.general["force_scan_step"]:
-                #         nobs = int(scan_duration / scan_step) + 1
-                #     else:
-                #         log.debug(
-                #             f"Adjusting discretization step for scan {scan_id} "
-                #             f"Duration {scan_duration} s, step {scan_step} s"
-                #         )
-                #         facs = utils.factors(int(scan_duration))
-                #         pos = max(0, int(np.searchsorted(facs, scan_step)) - 1)
-                #         scan_step = facs[pos]
-                #         nobs = int(scan_duration / scan_step) + 1
-                # scan_step = datetime.timedelta(seconds=scan_step)
-                # scan_tstamps = [scan_start + i * scan_step for i in range(nobs)]
-                # if self.setup.general["force_scan_step"]:
-                #     scan_tstamps.append(scan_end)
-
                 # Update observation data
-                if _code not in observation_bands:
-                    observation_bands[_code] = {}
-                    observation_tstamps[_code] = {}
+                if _station_code not in observation_bands:
+                    observation_bands[_station_code] = {}
+                    observation_tstamps[_station_code] = {}
+
+                band = mode.get_station_band(_station_code)
+                if source not in observation_bands[_station_code]:
+                    observation_bands[_station_code][source] = band
+                    observation_tstamps[_station_code][source] = scan_tstamps
                 else:
-                    band = mode.get_station_band(_code)
-                    if source not in observation_bands[_code]:
-                        observation_bands[_code][source] = band
-                        observation_tstamps[_code][source] = scan_tstamps
-                    else:
-                        assert observation_bands[_code][source] == band
-                        observation_tstamps[_code][source] += scan_tstamps
+                    assert observation_bands[_station_code][source] == band
+                    observation_tstamps[_station_code][source] += scan_tstamps
 
         # Update baselines with observations
-        log.info("Loading observations")
+        log.info("Updating baselines with observations")
         for baseline_id in observation_bands:
 
             # Update baselines with observations
             for source_id in observation_bands[baseline_id]:
                 _baselines[baseline_id].add_observation(
-                    Observation(
+                    Observation.from_experiment(
                         _baselines[baseline_id],
                         self.sources[source_id],
                         observation_bands[baseline_id][source_id],
                         observation_tstamps[baseline_id][source_id],
+                        self,
                     )
                 )
-
-            # # Group observation epochs of the baseline
-            # _baselines[baseline_id].update_with_observations()
 
         return list(_baselines.values())
 
@@ -303,7 +358,7 @@ class Experiment:
 
         try:
             if self.requires_spice:
-                log.info("Loading SPICE kernels")
+                log.debug("Loaded SPICE kernels")
                 metak = str(
                     self.setup.resources["ephemerides"]
                     / self.setup.general["target"]
@@ -314,7 +369,7 @@ class Experiment:
             yield None
         finally:
             if self.requires_spice:
-                log.info("Unloading SPICE kernels")
+                log.debug("Unloaded SPICE kernels")
                 spice.kclear()
 
         return None

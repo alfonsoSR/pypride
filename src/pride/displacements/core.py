@@ -1,6 +1,7 @@
 from typing import Any, TYPE_CHECKING
 from ..logger import log
 from abc import abstractmethod, ABCMeta
+import numpy as np
 
 if TYPE_CHECKING:
     from ..experiment.experiment import Experiment
@@ -22,30 +23,19 @@ class Displacement(metaclass=ABCMeta):
         # self.config: dict[str, Any] = self.exp.setup.displacements[self.name]
         self._resources: dict[str, Any] = {}
         self.resources: dict[str, Any] = {}
+        log.debug(f"Ensuring resources for {self.name} displacement")
         self.ensure_resources()
-        log.debug(f"Acquired resources for {self.name} displacements")
         return None
 
     @abstractmethod
-    def ensure_resources(self) -> None:
-        log.error(
-            f"Method ensure_resources not implemented for {self.name} displacement"
-        )
-        exit(1)
+    def ensure_resources(self) -> None: ...
 
     @abstractmethod
     def load_resources(
         self, epoch: "time.Time", shared: dict[str, Any]
-    ) -> dict[str, Any]:
-        log.error(
-            f"Method load_resources not implemented for {self.name} displacement"
-        )
-        exit(1)
+    ) -> dict[str, Any]: ...
 
     @abstractmethod
-    def calculate(self, epoch: "time.Time", resources: dict[str, Any]):
-
-        log.error(
-            f"Method calculate not implemented for {self.name} displacement"
-        )
-        exit(1)
+    def calculate(
+        self, epoch: "time.Time", resources: dict[str, Any]
+    ) -> np.ndarray: ...

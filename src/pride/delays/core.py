@@ -4,6 +4,7 @@ from ..logger import log
 
 if TYPE_CHECKING:
     from ..experiment.experiment import Experiment
+    from ..experiment.observation import Observation
 
 
 class Delay(metaclass=ABCMeta):
@@ -29,30 +30,22 @@ class Delay(metaclass=ABCMeta):
         self.exp = exp
         self.config: dict[str, Any] = self.exp.setup.delays[self.name]
         self.resources: dict[str, Any] = {}
+        self.loaded_resources: dict[str, Any] = {}
 
         # Ensure resources required to calculate the delay
+        log.debug(f"Ensuring resources for {self.name} delay")
         self.ensure_resources()
-        log.debug(f"Acquired resources for {self.name} delay")
+
+        # Load resources
+        self.loaded_resources = self.load_resources()
 
         return None
 
     @abstractmethod
-    def ensure_resources(self) -> None:
-        """Ensure availability of external resources required to calculate the delay"""
+    def ensure_resources(self) -> None: ...
 
-        log.error(
-            f"Method ensure_resources not implemented for {self.name} delay"
-        )
-        exit(1)
+    @abstractmethod
+    def load_resources(self) -> dict[str, Any]: ...
 
-        return None
-
-    def load_resources(self) -> dict[str, Any]:
-        """Load resources required to calculate the delay
-
-        Updates the baselines of the experiment with resources required to calculate the delay in their specific time domain
-        """
-        log.error(
-            f"Method load_resources not implemented for {self.name} delay"
-        )
-        exit(1)
+    @abstractmethod
+    def calculate(self, obs: "Observation") -> Any: ...

@@ -6,9 +6,11 @@ import numpy as np
 from .. import coordinates as coord
 from scipy import interpolate
 import spiceypy as spice
+from ..constants import J2000
 
 if TYPE_CHECKING:
     from .experiment import Experiment
+    from .source import NearFieldSource
 
 
 class Station:
@@ -26,6 +28,7 @@ class Station:
         "name",
         "possible_names",
         "is_phase_center",
+        "is_uplink",
         "has_tectonic_correction",
         "has_geophysical_corrections",
         "exp",
@@ -47,8 +50,9 @@ class Station:
         if name in alternative_names:
             self.possible_names += alternative_names[name]
 
-        # Phase center flag
+        # State flags
         self.is_phase_center = False
+        self.is_uplink = False
         self.has_tectonic_correction = False
         self.has_geophysical_corrections = False
 
@@ -73,7 +77,9 @@ class Station:
         return val
 
     @staticmethod
-    def from_experiment(name: str, experiment: "Experiment") -> "Station":
+    def from_experiment(
+        name: str, experiment: "Experiment", uplink: bool = False
+    ) -> "Station":
 
         station = Station(name)
         setup = experiment.setup
@@ -90,6 +96,10 @@ class Station:
                     "Using an arbitrary station as phase center is not "
                     "supported yet"
                 )
+
+        # Check if station is uplink
+        if uplink:
+            station.is_uplink = True
 
         # Station coordinates at reference epoch
         with io.internal_file(

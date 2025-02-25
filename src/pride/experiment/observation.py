@@ -3,6 +3,10 @@ import datetime
 from astropy import time
 from ..logger import log
 import numpy as np
+from ..delays import Tropospheric, Ionospheric, Geometric
+from .. import io
+from .source import NearFieldSource, FarFieldSource
+from nastro import plots as ng
 
 if TYPE_CHECKING:
     from .experiment import Experiment
@@ -24,6 +28,7 @@ class Observation:
     __slots__ = (
         "source",
         "band",
+        "obs_freq",
         "tstamps",
         "baseline",
         "station",
@@ -31,6 +36,11 @@ class Observation:
         "icrf2itrf",
         "seu2itrf",
         "dot_icrf2itrf",
+        "source_az",
+        "source_el",
+        "source_ra",
+        "source_dec",
+        "tx_epochs",
     )
 
     def __init__(
@@ -62,10 +72,68 @@ class Observation:
         self.station = baseline.station
 
         # Optional properties
+        self.obs_freq: "np.ndarray" = NotImplemented
         self.exp: "Experiment" = NotImplemented
         self.icrf2itrf: "np.ndarray" = NotImplemented
         self.seu2itrf: "np.ndarray" = NotImplemented
         self.dot_icrf2itrf: "np.ndarray" = NotImplemented
+        self.source_az: "np.ndarray" = NotImplemented
+        self.source_el: "np.ndarray" = NotImplemented
+        self.source_ra: "np.ndarray" = NotImplemented
+        self.source_dec: "np.ndarray" = NotImplemented
+        self.tx_epochs: "time.Time" = NotImplemented
+
+        return None
+
+    @staticmethod
+    def from_experiment(
+        baseline: "Baseline",
+        source: "Source",
+        band: "Band",
+        tstamps: list[datetime.datetime],
+        experiment: "Experiment",
+    ) -> "Observation":
+
+        # Initialize normal observation
+        observation = Observation(baseline, source, band, tstamps)
+
+        # Add experiment as attribute
+        observation.exp = experiment
+
+        # # Add observation frequency
+        # if isinstance(observation.source, FarFieldSource):
+
+        #     freq = experiment.setup.general["reference_frequency"]
+        #     observation.obs_freq = freq * np.ones_like(observation.tstamps.jd)  # type: ignore
+
+        # elif isinstance(observation.source, NearFieldSource):
+
+        #     with io.internal_file(
+        #         f"ramp.{observation.source.spice_id}"
+        #     ).open() as f:
+        #         for line in f:
+        #             print(line)
+
+        #     exit(0)
+
+        # else:
+        #     raise NotImplementedError("Not possible")
+
+        return observation
+
+    def update_with_source_coordinates(self) -> None:
+        """Update with source coordinates at timestamps"""
+
+        (
+            self.source_az,
+            self.source_el,
+            self.source_ra,
+            self.source_dec,
+            _tx_epochs,
+        ) = self.source.spherical_coordinates(self)
+
+        if _tx_epochs is not None:
+            self.tx_epochs = _tx_epochs
 
         return None
 
@@ -78,6 +146,20 @@ class Observation:
         return val
 
     def calculate_delays(self) -> Any:
+
+        delays = self.exp.delay_models
+        delay = None
+        for _delay in delays:
+            if isinstance(_delay, Tropospheric):
+                delay = _delay
+                break
+        assert isinstance(delay, Tropospheric)
+
+        x = delay.calculate(self)
+        print(x)
+
+        with ng.SingleAxis() as fig:
+            fig.add_line(self.tstamps.jd, x)
 
         log.debug(
             f"Calculating delays: {self.source.name} source "

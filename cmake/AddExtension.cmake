@@ -1,7 +1,7 @@
 macro (add_extension source_dir output_dir)
 
     # Get fortran and signature files
-    file(GLOB fortran_files ${source_dir}/*.F)
+    file(GLOB fortran_files ${source_dir}/*.F ${source_dir}/*.f90)
     file(GLOB signature_files ${source_dir}/*.pyf)
 
     # Ensure that there is exactly one signature file
@@ -21,6 +21,11 @@ macro (add_extension source_dir output_dir)
             "Missing fortran source files for ${name} extension ${n_fortran}"
         )
     endif()
+
+    message(
+        STATUS
+        "${Python_EXECUTABLE} -m numpy.f2py -c ${signature_files} ${fortran_files} --backend meson"
+    )
 
     # Compile and install extension
     execute_process(

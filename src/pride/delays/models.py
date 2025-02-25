@@ -1,16 +1,20 @@
 from .core import Delay
 from ..io import get_target_information, ESA_SPICE, NASA_SPICE, internal_file
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from ..logger import log
 import requests
-from astropy import time
+from astropy import time, coordinates
 from ftplib import FTP_TLS
 import unlzw3
 import gzip
 import numpy as np
 from scipy import interpolate
 from ..types import Antenna
-from ..experiment.source import NearFieldSource, FarFieldSource
+from ..external import vienna
+from nastro import plots as ng
+import spiceypy as spice
+from ..experiment.source import FarFieldSource, NearFieldSource
+from ..constants import J2000, L_C
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -99,393 +103,497 @@ class Geometric(Delay):
         return None
 
     def load_resources(self) -> dict[str, Any]:
+
+        log.debug(f"Loading resources for {self.name} delay")
+
         return {}
+
+    def calculate_nearfield(self, obs: "Observation") -> np.ndarray:
+        """Calculate geometric delay for a near-field source
+
+        NOTE: This function assumes that the phase center is the geocenter.
+        """
+
+        log.warning(
+            "Implementation of near-field geometric delay is not reliable"
+        )
+
+        # Sanity
+        source = obs.source
+        assert isinstance(source, NearFieldSource)
+
+        # Get TX epoch at spacecraft [Downlink SC -> Station]
+        tx = obs.tx_epochs
+        rx_station: time.Time = obs.tstamps.tdb  # type: ignore
+        assert tx.scale == "tdb"  # Sanity
+        assert rx_station.scale == "tdb"  # Sanity
+        lt_station: np.ndarray = (rx_station - tx).to("s").value  # type: ignore
+
+        # Calculate RX epoch at phase center [Geocenter]
+        #######################################################################
+
+        # Initialization
+        clight = spice.clight() * 1e3
+        clight2 = clight * clight
+
+        # Calculate BCRF position of source at TX epoch
+        et_tx: np.ndarray = (tx - J2000.tdb).to("s").value  # type: ignore
+        xsrc_bcrf_tx = (
+            np.array(
+                spice.spkpos(source.spice_id, et_tx, "J2000", "NONE", "SSB")[0]
+            )
+            * 1e3
+        )
+
+        # Calculate BCRF position of phase center at estimated RX epoch
+        # NOTE: Seems logical to initialize RX with the one of the station
+        et_rx: np.ndarray = (rx_station - J2000.tdb).to("s").value  # type: ignore
+        xphc_bcrf_rx = (
+            np.array(spice.spkpos("EARTH", et_rx, "J2000", "NONE", "SSB")[0])
+            * 1e3
+        )
+
+        # Calculate gravitational parameter of celestial bodies
+        bodies: list = self.exp.setup.internal["lt_correction_bodies"]
+        bodies.pop(bodies.index("earth"))
+        bodies_gm = (
+            np.array([spice.bodvrd(body, "GM", 1)[1][0] for body in bodies])
+            * 1e9
+        )
+
+        # Calculate BCRF positions of celestial bodies at TX
+        xbodies_bcrf_tx = np.array(
+            [
+                np.array(spice.spkpos(body, et_tx, "J2000", "NONE", "SSB")[0])
+                * 1e3
+                for body in bodies
+            ]
+        )
+
+        # Calculate position of source wrt celestial bodies at TX
+        r0b = xsrc_bcrf_tx[None, :, :] - xbodies_bcrf_tx
+        r0b_mag = np.linalg.norm(r0b, axis=-1)  # (M, N)
+
+        # Initialize light travel time and rx epoch
+        # lt_np1 = LT_{n+1}
+        lt_np1 = np.linalg.norm(xphc_bcrf_rx - xsrc_bcrf_tx, axis=-1) / clight
+        rx_np1: time.Time = tx + time.TimeDelta(lt_np1, format="sec")
+
+        # Initialize variables for iteration
+        lt_n = 0.0 * lt_np1
+        n_iter = 0
+        iter_max = self.exp.setup.internal["lt_max_iterations"]
+        precision = float(self.exp.setup.internal["lt_precision"])
+
+        # Iterative correction of LT and RX
+        # Function: F(RX) = RX - TX - R_02/c - RLT_02
+        # Derivative: dF/dRX = 1 - (R_02_vec * dR_2_vec/dRX) / (R_02 * c)
+        # Newton-Raphson: RX_{n+1} = RX_n - F(RX_n) / dF/dRX
+        # Equivalent: LT_{n+1} = LT_n - F(RX_n) / dF/dRX
+        while np.any(np.abs(lt_np1 - lt_n) > precision) and n_iter < iter_max:
+
+            # Update light travel time and RX
+            lt_n = lt_np1
+            rx_n = tx + time.TimeDelta(lt_n, format="sec")
+
+            # Convert RX to ephemeris time
+            et_rx = (rx_n - J2000.tdb).to("s").value  # type: ignore
+
+            # Calculate BCRF coordinates of phase center at RX
+            sphc_bcrf_rx = (
+                np.array(
+                    spice.spkezr("EARTH", et_rx, "J2000", "NONE", "SSB")[0]
+                )
+                * 1e3
+            )
+            xphc_bcrf_rx = sphc_bcrf_rx[:, :3]
+            vphc_bcrf_rx = sphc_bcrf_rx[:, 3:]
+
+            # Calculate BCRF positions of celestial bodies at RX
+            xbodies_bcrf_rx = np.array(
+                [
+                    np.array(
+                        spice.spkpos(body, et_rx, "J2000", "NONE", "SSB")[0]
+                    )
+                    * 1e3
+                    for body in bodies
+                ]
+            )
+
+            # Calculate relativistic correction
+            r02 = xphc_bcrf_rx - xsrc_bcrf_tx  # (N, 3)
+            r02_mag = np.linalg.norm(r02, axis=-1)  # (N,)
+            r2b = xphc_bcrf_rx[None, :, :] - xbodies_bcrf_rx  # (M, N, 3)
+            r2b_mag = np.linalg.norm(r2b, axis=-1)  # (M, N)
+            r02b_mag = np.linalg.norm(r2b - r0b, axis=-1)  # (M, N)
+            gmc = 2.0 * bodies_gm[:, None] / clight2  # (M, 1)
+            rlt_02 = np.sum(
+                (gmc / clight)
+                * np.log(
+                    (r0b_mag + r2b_mag + r02b_mag + gmc)
+                    / (r0b_mag + r2b_mag - r02b_mag + gmc)
+                ),
+                axis=0,
+            )
+
+            # Evaluate function and derivative
+            f = lt_n - (r02_mag / clight) - rlt_02
+            dfdrx = (
+                1.0
+                - np.sum((r02 / r02_mag[:, None]) * vphc_bcrf_rx, axis=-1)
+                / clight
+            )
+
+            # Update light travel time and RX
+            lt_np1 = lt_n - f / dfdrx
+            rx_np1 = tx + time.TimeDelta(lt_np1, format="sec")
+
+            # Update iteration
+            n_iter += 1
+
+        # Calculate post-newtonian correction for path between stations
+        # #####################################################################
+        # NOTE: From now on, I refer to the RX of the station as rx1 and to the RX of the phase center as rx2
+
+        # Calculate BCRF position of station at RX1
+        xsta_gcrf_rx1 = obs.station.location(obs.tstamps, frame="icrf")
+        rx1 = rx_station
+        et_rx1 = (rx1 - J2000.tdb).to("s").value  # type: ignore
+        searth_bcrf_rx1 = (
+            np.array([spice.spkezr("EARTH", et_rx1, "J2000", "NONE", "SSB")[0]])
+            * 1e3
+        )
+        xearth_bcrf_rx1 = searth_bcrf_rx1[:, :3]
+        vearth_bcrf_rx1 = searth_bcrf_rx1[:, 3:]
+        xsun_bcrf_rx1 = (
+            np.array([spice.spkpos("SUN", et_rx1, "J2000", "NONE", "SSB")[0]])
+            * 1e3
+        )
+        U_earth = (
+            spice.bodvrd("SUN", "GM", 1)[1][0]
+            * 1e9
+            / np.linalg.norm(xsun_bcrf_rx1 - xearth_bcrf_rx1, axis=-1)
+        )
+        xsta_bcrf_rx1 = (
+            xearth_bcrf_rx1
+            + (1.0 - U_earth / clight2 - L_C) * xsta_gcrf_rx1
+            - 0.5
+            * np.sum(vearth_bcrf_rx1 * xsta_gcrf_rx1, axis=-1)
+            * vearth_bcrf_rx1
+            / clight2
+        )
+
+        # Calculate BCRF position of phase center at RX2
+        rx2 = rx_np1
+        et_rx2 = (rx2 - J2000.tdb).to("s").value  # type: ignore
+        xphc_bcrf_rx2 = (
+            np.array([spice.spkpos("EARTH", et_rx2, "J2000", "NONE", "SSB")[0]])
+            * 1e3
+        )
+
+        # Calculate position of celestial bodies at RX1 and RX2
+        xbodies_bcrf_rx1 = (
+            np.array(
+                [
+                    np.array(
+                        spice.spkpos(body, et_rx1, "J2000", "NONE", "SSB")[0]
+                    )
+                    for body in bodies
+                ]
+            )
+            * 1e3
+        )
+        xbodies_bcrf_rx2 = (
+            np.array(
+                [
+                    np.array(
+                        spice.spkpos(body, et_rx2, "J2000", "NONE", "SSB")[0]
+                    )
+                    for body in bodies
+                ]
+            )
+            * 1e3
+        )
+
+        # Calculate relativistic correction
+        r01 = xsta_bcrf_rx1 - xsrc_bcrf_tx  # (N, 3)
+        r01_mag = np.linalg.norm(r01, axis=-1)  # (N,)
+        r02 = xphc_bcrf_rx2 - xsrc_bcrf_tx  # (N, 3)
+        r02_mag = np.linalg.norm(r02, axis=-1)  # (N,)
+        r0b = xsrc_bcrf_tx[None, :, :] - xbodies_bcrf_tx  # (M, N, 3)
+        r0b_mag = np.linalg.norm(r0b, axis=-1)
+        r1b = xsta_bcrf_rx1[None, :, :] - xbodies_bcrf_rx1  # (M, N, 3)
+        r1b_mag = np.linalg.norm(r1b, axis=-1)
+        r2b = xphc_bcrf_rx2[None, :, :] - xbodies_bcrf_rx2  # (M, N, 3)
+        r2b_mag = np.linalg.norm(r2b, axis=-1)
+        gmc = 2.0 * bodies_gm[:, None] / (clight * clight)  # (M, 1)
+        tg_12 = np.sum(
+            (gmc / clight)
+            * np.log(
+                (r2b_mag + r0b_mag + r02_mag)
+                * (r1b_mag + r0b_mag - r01_mag)
+                / (
+                    (r2b_mag + r0b_mag - r02_mag)
+                    * (r1b_mag + r0b_mag + r01_mag)
+                )
+            ),
+            axis=0,
+        )
+
+        # Calculate delay in TT
+        #######################################################################
+        dt: np.ndarray = (rx2 - rx1).to("s").value  # type: ignore
+        vearth_mag = np.linalg.norm(vearth_bcrf_rx1, axis=-1)
+        baseline = -xsta_gcrf_rx1
+        v2 = 0.0 * vearth_bcrf_rx1  # Velocity of phase center in GCRF
+        return (
+            (dt + tg_12)
+            * (1 - (0.5 * vearth_mag * vearth_mag + U_earth) / clight2)
+            / (1.0 - L_C)
+            - np.sum(vearth_bcrf_rx1 * baseline, axis=-1) / clight2
+        ) / (1.0 + np.sum(vearth_bcrf_rx1 * v2, axis=-1) / clight2)
+
+    def calculate_farfield(self, obs: "Observation") -> np.ndarray:
+        """Calculate geometric delay for a far-field source
+
+        Calculates the geometric delay using the consensus model for far-field sources, described in section 11 of the IERS Conventions 2010.
+        """
+
+        # Sanity
+        source = obs.source
+        assert isinstance(source, FarFieldSource)
+
+        # Calculate BCRF position of station at RX
+
+        raise NotImplementedError("Missing calculate for farfield geometric")
 
     def calculate(self, obs: "Observation") -> Any:
 
-        return NotImplemented
+        if isinstance(obs.source, FarFieldSource):
+            return self.calculate_farfield(obs)
+        elif isinstance(obs.source, NearFieldSource):
+            return self.calculate_nearfield(obs)
+        else:
+            log.error(
+                "Failed to calculate geometric delay: Invalid source type"
+            )
+            exit(1)
+
+        raise NotImplementedError("Missing calculate for geometric")
 
 
 class Tropospheric(Delay):
-    """Tropospheric delay
-
-    # Available models
-    ## Petrov
-    - BRIEF DESCRIPTION OF THE MODEL AND SOURCE
-    - DESCRIPTION OF REQUIRED RESOURCES AND KEYS
-
-    ## Vienna Mapping Function 3 (VMF3)
-    - BRIEF DESCRIPTION OF THE MODEL AND SOURCE
-    - DESCRIPTION OF REQUIRED RESOURCES AND KEYS
-    """
+    """Tropospheric correction to light travel time"""
 
     name = "Tropospheric"
     etc = {
-        "petrov_url": "http://pathdelay.net/spd/asc/geosfpit",
-        "vienna_url": "https://vmf.geo.tuwien.ac.at/trop_products",
+        "coords_url": "https://vmf.geo.tuwien.ac.at/station_coord_files/",
+        "coeffs_url": (
+            "https://vmf.geo.tuwien.ac.at/trop_products/VLBI/V3GR/"
+            "V3GR_OP/daily/"
+        ),
+        "update_interval_hours": 6.0,
     }
-    models: list[str] = ["petrov", "vienna"]
-    requires_spice = False
-    station_specific = True
 
     def ensure_resources(self) -> None:
+        """Check for site coordinates and site-wise tropospheric data"""
 
-        # Ensure resources for main tropospheric model
-        if self.config["model"] not in self.models:
-            log.error(
-                "Failed to initialize tropospheric delay: "
-                f"Invalid model {self.config['model']}"
-            )
-            exit(1)
-        getattr(self, f"ensure_resources_{self.config['model']}")()
-
-        # No further action if backup model is not enabled
-        if not self.config["backup"]:
-            return None
-
-        # Ensure resources for backup model
-        if self.config["backup_model"] not in self.models:
-            log.error(
-                "Failed to initialize tropospheric delay: "
-                f"Invalid backup model {self.config['backup_model']}"
-            )
-            exit(1)
-        getattr(self, f"ensure_resources_{self.config['backup_model']}")()
-
-        return None
-
-    def ensure_resources_petrov(self) -> None:
+        # # Download source of site coordinates if not present
+        # vlbi_ell = self.config["data"] / "vlbi.ell"
+        # vlbi_ell_url = self.etc["coords_url"] + vlbi_ell.name
+        # if not vlbi_ell.exists():
+        #     response = requests.get(vlbi_ell_url)
+        #     if not response.ok:
+        #         log.error(
+        #             "Failed to initialize tropospheric delay: "
+        #             f"Failed to download {vlbi_ell_url}"
+        #         )
+        #         exit(1)
+        #     vlbi_ell.write_bytes(response.content)
 
         # Initialize date from which to look for tropospheric data
-        date: Any = time.Time(
-            self.exp.initial_epoch.mjd // 1, format="mjd", scale="utc"  # type: ignore
+        date: time.Time = time.Time(
+            self.exp.initial_epoch.mjd // 1,  # type: ignore
+            format="mjd",
+            scale="utc",
         )
-        step = time.TimeDelta(3 * 3600, format="sec")
-        date += (self.exp.initial_epoch.datetime.hour // 3) * step  # type: ignore
+        step = time.TimeDelta(
+            self.etc["update_interval_hours"] * 3600.0, format="sec"
+        )
+        date += (
+            self.exp.initial_epoch.datetime.hour  # type: ignore
+            // self.etc["update_interval_hours"]
+        ) * step
 
-        # Check if tropospheric data is available
+        # Download tropospheric data files
         coverage: dict[tuple[time.Time, time.Time], Path] = {}
         while True:
 
-            # Define path to tropospheric data file
-            spd_file = self.config["data"] / (
-                # spd_file = self.exp.setup.catalogues["tropospheric_data"] / (
-                f"spd_geosfpit_{date.strftime('%Y%m%d')}_"
-                f"{date.datetime.hour:02d}00.spd"
-            )
-
-            # Ensure parent directory exists
-            if not spd_file.parent.exists():
-                spd_file.parent.mkdir(parents=True, exist_ok=True)
+            # Define filename and url
+            year: Any = date.datetime.year  # type: ignore
+            doy: Any = date.datetime.timetuple().tm_yday  # type: ignore
+            site_file = self.config["data"] / f"{year:04d}{doy:03d}.v3gr_r"
+            site_url = self.etc["coeffs_url"] + f"{year:04d}/{site_file.name}"
 
             # Download file if not present
-            if not spd_file.exists():
-                log.info(f"Downloading {spd_file}")
-                response = requests.get(
-                    f"{self.etc['petrov_url']}/{spd_file.name}"
-                )
-                if response.ok:
-                    spd_file.write_bytes(response.content)
-                else:
-                    raise FileNotFoundError(
-                        "Failed to initialize tropospheric delay: "
-                        f"Failed to download {self.etc['petrov_url']}/{spd_file.name}"
-                    )
-
-            # Add coverage to dictionary
-            coverage[(date, date + step)] = spd_file
-
-            # Update date
-            if date > self.exp.final_epoch:
-                break
-            date += step
-
-        # Add coverage to resources
-        self.resources["coverage_petrov"] = coverage
-
-        return None
-
-    def ensure_resources_vienna(self) -> None:
-
-        # Initialize date from which to look for tropospheric data
-        date: Any = time.Time(
-            self.exp.initial_epoch.mjd // 1, format="mjd", scale="utc"  # type: ignore
-        )
-        step = time.TimeDelta(6 * 3600, format="sec")
-        date += (self.exp.initial_epoch.datetime.hour // 6) * step  # type: ignore
-
-        # Define coverage dictionary
-        site_coverage: dict[tuple[time.Time, time.Time], Path] = {}
-        grid_coverage: dict[tuple[time.Time, time.Time], Path] = {}
-
-        # Acquire tropospheric data
-        while True:
-
-            # Get year and day of year
-            year = date.datetime.year
-            doy = date.datetime.timetuple().tm_yday
-
-            # Site-specific data
-            site_file = self.config["data"] / f"{year:04d}{doy:03d}.v3gr_r"
-            site_url = (
-                self.etc["vienna_url"]
-                + f"/VLBI/V3GR/V3GR_OP/daily/{year:04d}/{site_file.name}"
-            )
-            if not site_file.parent.exists():
-                site_file.parent.mkdir(parents=True, exist_ok=True)
+            site_file.parent.mkdir(parents=True, exist_ok=True)
             if not site_file.exists():
                 log.info(f"Downloading {site_file}")
                 response = requests.get(site_url)
                 if not response.ok:
-                    raise FileNotFoundError(
+                    log.error(
                         "Failed to initialize tropospheric delay: "
                         f"Failed to download {site_url}"
                     )
+                    exit(1)
                 site_file.write_bytes(response.content)
 
-            if site_file not in site_coverage.values():
-                site_coverage[(date, date + step)] = site_file
+            # Add to coverage if necessary
+            if site_file not in coverage.values():
+                coverage[(date, date + step)] = site_file
             else:
-                key = list(site_coverage.keys())[
-                    list(site_coverage.values()).index(site_file)
+                key = list(coverage.keys())[
+                    list(coverage.values()).index(site_file)
                 ]
-                site_coverage.pop(key)
-                site_coverage[(key[0], date + step)] = site_file
-
-            # Grid data
-            month = date.datetime.month
-            day = date.datetime.day
-            hour = date.datetime.hour
-
-            grid_file = (
-                self.config["data"]
-                / f"V3GR_{year:04d}{month:02d}{day:02d}.H{hour:02d}"
-            )
-            grid_url = (
-                f"{self.etc['vienna_url']}/GRID/1x1/V3GR/"
-                f"V3GR_OP/{year:04d}/{grid_file.name}"
-            )
-
-            if not grid_file.parent.exists():
-                grid_file.parent.mkdir(parents=True, exist_ok=True)
-            if not grid_file.exists():
-                log.info(f"Downloading {grid_file}")
-                response = requests.get(grid_url)
-                if not response.ok:
-                    raise FileNotFoundError(
-                        "Failed to initialize tropospheric delay: "
-                        f"Failed to download {grid_url}"
-                    )
-                grid_file.write_bytes(response.content)
-
-            grid_coverage[(date, date + step)] = grid_file
+                coverage.pop(key)
+                coverage[(key[0], date + step)] = site_file
 
             # Update date
             if date > self.exp.final_epoch:
                 break
             date += step
 
-        # Add coverage to resources
-        self.resources["coverage_vienna_site"] = site_coverage
-        self.resources["coverage_vienna_grid"] = grid_coverage
+        # Add coverage and source of coordinates to resources
+        self.resources["coverage"] = coverage
 
-    def load_resources(self) -> dict[str, tuple[str, Any]]:
+        return None
 
-        resources: dict[str, tuple[str, Any]] = {}
+    def load_resources(self) -> dict[str, dict[str, Any]]:
 
+        resources: dict[str, dict[str, Any]] = {}
         for baseline in self.exp.baselines:
 
-            # Check if resources are already available for station
+            # Check if resources are already available for this station
             station = baseline.station
             if station.name in resources:
                 continue
 
-            # Attempt to load resources for main model
-            success: bool = True
-            try:
-                resources_main = getattr(
-                    self, f"load_resources_{self.config['model']}"
-                )(station)
-            except ValueError as e:
-                if f"Station {station.name} not found" not in str(e):
-                    raise e
-                success = False
+            # # Read site coordinates
+            # with self.resources["sites"].open() as f:
 
-            # If successful, add resources to dictionary
-            if success:
-                resources[station.name] = (self.config["model"], resources_main)
-                continue
+            #     # Find site in file
+            #     _content: str = ""
+            #     for line in f:
+            #         if np.any(
+            #             [name in line for name in station.possible_names]
+            #         ):
+            #             _content = line
+            #             break
 
-            # Raise error if backup model is not enabled
-            if not self.config["backup"]:
-                log.error(
-                    f"Failed to load resources for tropospheric delay: "
-                    f"Station {station.name} not found in {self.config['model']} data"
+            #     # Ensure that site is present
+            #     if _content == "":
+            #         log.error(
+            #             "Failed to initialize tropospheric delay: "
+            #             f"Site-wise data not available for {station.name}"
+            #         )
+            #         exit(1)
+
+            # lat, lon, height = [float(x) for x in _content.split()[1:4]]
+            # site_coords = coordinates.EarthLocation.from_geodetic(
+            #     lat=lat, lon=lon, height=height, ellipsoid="GRS80"
+            # )
+
+            # Read site-wise tropospheric data
+            _site_data = []
+            for source in self.resources["coverage"].values():
+
+                # Find site in file
+                with source.open() as f:
+                    _content: str = ""
+                    for line in f:
+                        if np.any(
+                            [name in line for name in station.possible_names]
+                        ):
+                            _content = line
+                            break
+
+                # Ensure that site is present
+                if _content == "":
+                    log.error(
+                        "Failed to initialize tropospheric delay: "
+                        f"Site-wise data not available for {station.name}"
+                    )
+                    exit(1)
+
+                # Extract coefficients
+                content = _content.split()
+                _site_data.append(
+                    [float(x) for x in content[1:6]]
+                    + [float(x) for x in content[9:]]
                 )
-                exit(1)
 
-            # Attempt to load resources for backup model
-            log.warning(
-                f"Using backup tropospheric model for {station.name} station"
-            )
-            resources_backup = getattr(
-                self, f"load_resources_{self.config['backup_model']}"
-            )(station)
-            resources[station.name] = (
-                self.config["backup_model"],
-                resources_backup,
-            )
+            data = np.array(_site_data).T
+
+            # Interpolate coefficients
+            mjd, ah, aw, dh, dw, gnh, geh, gnw, gew = data
+            resources[station.name] = {
+                "ah": interpolate.interp1d(mjd, ah, kind="linear"),
+                "aw": interpolate.interp1d(mjd, aw, kind="linear"),
+                "dh": interpolate.interp1d(mjd, dh, kind="linear"),
+                "dw": interpolate.interp1d(mjd, dw, kind="linear"),
+                "gnh": interpolate.interp1d(mjd, gnh, kind="linear"),
+                "geh": interpolate.interp1d(mjd, geh, kind="linear"),
+                "gnw": interpolate.interp1d(mjd, gnw, kind="linear"),
+                "gew": interpolate.interp1d(mjd, gew, kind="linear"),
+            }
 
         return resources
 
-    def load_resources_petrov(self, station: "Station") -> dict[str, Any]:
+    def calculate(self, obs: "Observation") -> Any:
 
-        interp_dry: dict[time.Time, interpolate.CloughTocher2DInterpolator] = {}
-        interp_wet: dict[time.Time, interpolate.CloughTocher2DInterpolator] = {}
-        elevation_cutoff: dict[time.Time, np.ndarray] = {}
+        # Initialization
+        clight = spice.clight() * 1e3
+        resources = self.loaded_resources[obs.station.name]
+        mjd: np.ndarray = obs.tstamps.mjd  # type: ignore
+        ah: np.ndarray = resources["ah"](mjd)
+        aw: np.ndarray = resources["aw"](mjd)
+        dh: np.ndarray = resources["dh"](mjd)
+        dw: np.ndarray = resources["dw"](mjd)
+        gnh: np.ndarray = resources["gnh"](mjd)
+        geh: np.ndarray = resources["geh"](mjd)
+        gnw: np.ndarray = resources["gnw"](mjd)
+        gew: np.ndarray = resources["gew"](mjd)
 
-        for (t0, _), source in self.resources["coverage_petrov"].items():
+        # Calculate geodetic coordinates of station
+        assert obs.tstamps.location is not None
+        coords = obs.tstamps.location.to_geodetic("GRS80")
+        lat: np.ndarray = np.array(coords.lat.rad, dtype=float)  # type: ignore
+        lon: np.ndarray = np.array(coords.lon.rad, dtype=float)  # type: ignore
+        el: np.ndarray = obs.source_el
+        az: np.ndarray = obs.source_az
+        zd: np.ndarray = 0.5 * np.pi - el  # zenith distance
 
-            with source.open() as _f:
+        # Calculate hydrostatic and wet mapping functions
+        mfh, mfw = np.array(
+            [
+                vienna.vmf3(ah[i], aw[i], mjdi, lat[i], lon[i], zd[i])
+                for i, mjdi in enumerate(mjd)
+            ]
+        ).T
 
-                f = _f.readlines()
+        # Calculate gradient mapping function
+        # SOURCE: https://doi.org/10.1007/s00190-018-1127-1
+        sintan = np.sin(el) * np.tan(el)
+        mgh = 1.0 / (sintan + 0.0031)
+        mgw = 1.0 / (sintan + 0.0007)
 
-                # Get station id
-                station_id = ""
-                for line in f:
-                    if line[0] == "S" and np.any(
-                        [name in line for name in station.possible_names]
-                    ):
-                        station_id = line.split()[1]
-                        break
-                if station_id == "":
-                    raise ValueError(
-                        "Failed to load tropospheric delay: "
-                        f"Station {station.name} not found in {source}"
-                    )
-
-                # Get azimuth and elevation grids
-                az_grid = {}
-                el_grid = {}
-                for line in f:
-                    if line[0] == "A":
-                        id, val = line.split()[1:]
-                        az_grid[id] = float(val)
-                    elif line[0] == "E":
-                        id, val = line.split()[1:]
-                        el_grid[id] = float(val)
-
-                # Get tropospheric delay data
-                data = {}
-                for line in f:
-                    if line[0] == "D" and line.split()[1] == station_id:
-                        eid, aid, d1, d2 = line.split()[2:]
-                        data[(el_grid[eid], az_grid[aid])] = (
-                            float(d1.replace("D", "e")),
-                            float(d2.replace("D", "e")),
-                        )
-
-            # Make grids and isolate dry and wet components
-            spd_grid = np.array([list(key) for key in data.keys()])
-            dry, wet = np.array(list(data.values())).T
-
-            # Epoch in TAI
-            epoch = time.Time(t0.datetime, scale="tai")
-
-            # Interpolators
-            interp_dry[epoch] = interpolate.CloughTocher2DInterpolator(
-                spd_grid, dry
-            )
-            interp_wet[epoch] = interpolate.CloughTocher2DInterpolator(
-                spd_grid, wet
-            )
-            elevation_cutoff[epoch] = np.min(spd_grid[:, 0])
-
-        return {
-            "dry": interp_dry,
-            "wet": interp_wet,
-            "elevation_cutoff": elevation_cutoff,
-        }
-
-    def load_resources_vienna(self, station: "Station") -> dict[str, Any]:
-
-        site_present: bool = True
-        data = []
-
-        # Try to load site-specific data
-        site_data = []
-        for (t0, _), source in self.resources["coverage_vienna_site"].items():
-
-            with source.open() as file:
-
-                content: str = ""
-                for line in file:
-                    if np.any(
-                        [name in line for name in station.possible_names]
-                    ):
-                        content = line
-                        break
-
-                if content == "":
-                    site_present = False
-                    break
-
-            site_data.append(
-                [float(x) for x in content.split()[1:6]]
-                + [float(x) for x in content.split()[9:]]
-            )
-
-        # Load grid data if site-specific data is not available
-        if site_present:
-            data = np.array(site_data).T
-        else:
-            log.warning(
-                f"Using gridded tropospheric data for {station.name} station"
-            )
-            grid_data: list[np.ndarray] = []
-
-            for (t0, _), source in self.resources[
-                "coverage_vienna_grid"
-            ].items():
-
-                data = np.loadtxt(source, skiprows=7).T
-                lat = np.sort(np.unique(data[0]))
-                lon = np.sort(np.unique(data[1]))
-                grid_shape = (len(lat), len(lon))
-                tmp = np.zeros((data.shape[0] - 1,))
-
-                # Interpolate coefficients, delays and gradients for station
-                tmp[0] = t0.mjd
-                for idx in range(1, tmp.shape[0]):
-                    (tmp[idx],) = interpolate.RectBivariateSpline(
-                        lat, lon, data[idx + 1].reshape(grid_shape)
-                    )(
-                        station.location(t0).lat.deg,
-                        station.location(t0).lon.deg,
-                    )[
-                        0
-                    ]
-
-                grid_data.append(tmp)
-
-            data = np.array(grid_data).T
-
-        # Generate interpolators
-        interp_type: str = "linear" if len(data[0]) <= 3 else "cubic"
-        return {
-            "a_hydro": interpolate.interp1d(data[0], data[1], kind=interp_type),
-            "a_wet": interpolate.interp1d(data[0], data[2], kind=interp_type),
-            "d_hydro": interpolate.interp1d(data[0], data[3], kind=interp_type),
-            "d_wet": interpolate.interp1d(data[0], data[4], kind=interp_type),
-            "gn_hydro": interpolate.interp1d(
-                data[0], data[5], kind=interp_type
-            ),
-            "ge_hydro": interpolate.interp1d(
-                data[0], data[6], kind=interp_type
-            ),
-            "gn_wet": interpolate.interp1d(data[0], data[7], kind=interp_type),
-            "ge_wet": interpolate.interp1d(data[0], data[8], kind=interp_type),
-        }
+        # Calculate delay
+        return (
+            dh * mfh
+            + dw * mfw
+            + mgh * (gnh * np.cos(az) + geh * np.sin(az))
+            + mgw * (gnw * np.cos(az) + gew * np.sin(az))
+        ) / clight
 
 
 class Ionospheric(Delay):
@@ -510,6 +618,10 @@ class Ionospheric(Delay):
     station_specific = True
 
     def ensure_resources(self) -> None:
+
+        log.warning(
+            "The implementation of the ionospheric delay should be revised"
+        )
 
         # Define range of dates to look for ionospheric data
         date: time.Time = time.Time(
@@ -595,6 +707,8 @@ class Ionospheric(Delay):
 
     def load_resources(self) -> dict[str, Any]:
 
+        log.debug(f"Loading resources for {self.name} delay")
+
         # Generate TEC maps
         tec_epochs = time.Time([key[0] for key in self.resources["coverage"]])
         _tec_maps: list[np.ndarray] = []
@@ -606,6 +720,8 @@ class Ionospheric(Delay):
                 content = iter([line.strip() for line in f])
                 lat_grid: np.ndarray | None = None
                 lon_grid: np.ndarray | None = None
+                ref_height: float = NotImplemented
+                ref_rearth: float = NotImplemented
 
                 while True:
 
@@ -613,6 +729,18 @@ class Ionospheric(Delay):
                         line = next(content)
                     except StopIteration:
                         break
+
+                    # Read reference ionospheric height
+                    if "HGT1 / HGT2 / DHGT" in line:
+                        h1, h2 = np.array(line.split()[:2], dtype=float)
+                        # Sanity check
+                        if h1 != h2:
+                            raise ValueError("Unexpected behavior")
+                        ref_height = h1
+
+                    # Read reference radius of the Earth
+                    if "BASE RADIUS" in line:
+                        ref_rearth = float(line.split()[0])
 
                     # Define latitude and longitude grids
                     if "LAT1 / LAT2 / DLAT" in line:
@@ -650,13 +778,21 @@ class Ionospheric(Delay):
         ]
 
         # Generate interpolators for the baselines
-        resources: dict[str, Any] = {}
+        resources: dict[str, Any] = {
+            "ref_height": ref_height,
+            "ref_rearth": ref_rearth,
+        }
         for baseline in self.exp.baselines:
 
-            coords = baseline.station.location(tec_epochs)
+            coords = coordinates.EarthLocation(
+                *baseline.station.location(tec_epochs, frame="itrf").T, unit="m"
+            ).to_geodetic("GRS80")
+            lat: np.ndarray = coords.lat.deg  # type: ignore
+            lon: np.ndarray = coords.lon.deg  # type: ignore
+
             data = [
                 tec_map([lon, lat])[0]
-                for tec_map, lon, lat in zip(tec_maps, coords.lon.deg, coords.lat.deg)  # type: ignore
+                for tec_map, lon, lat in zip(tec_maps, lon, lat)
             ]
             interp_type: str = "linear" if len(data) <= 3 else "cubic"
             resources[baseline.station.name] = interpolate.interp1d(
@@ -664,6 +800,80 @@ class Ionospheric(Delay):
             )
 
         return resources
+
+    def calculate(self, obs: "Observation") -> Any:
+
+        # Get vertical TEC from station at observation epochs
+        vtec = self.loaded_resources[obs.station.name](obs.tstamps.mjd)
+
+        # Read reference height and Earth radius from model
+        h_ref = self.loaded_resources["ref_height"]
+        r_earth = self.loaded_resources["ref_rearth"]
+
+        # NOTE: Using model from Petrov (based on original code)
+        zenith = np.arcsin(np.cos(obs.source_el) / (1.0 + (h_ref / r_earth)))
+        tec = 0.1 * vtec / np.cos(zenith)
+
+        # Get frequency of the detected signal
+        freq = np.zeros_like(obs.tstamps.jd)
+        if obs.source.is_farfield:
+            freq += obs.band.channels[0].sky_freq
+
+        if obs.source.is_nearfield:
+
+            # Get uplink and downlink TX epochs in TDB
+            light_time = obs.tstamps.tdb - obs.tx_epochs.tdb  # type: ignore
+            uplink_tx = obs.tx_epochs.tdb - light_time  # type: ignore
+            downlink_tx = obs.tx_epochs.tdb  # type: ignore
+
+            # Read three-way ramping data
+            if obs.source.has_three_way_ramping:
+
+                three_way = obs.source.three_way_ramping
+                mask_3way = (
+                    uplink_tx.jd[:, None] >= three_way["t0"].jd[None, :]  # type: ignore
+                ) * (
+                    uplink_tx.jd[:, None] <= three_way["t1"].jd[None, :]  # type: ignore
+                )
+                f0 = np.sum(np.where(mask_3way, three_way["f0"], 0), axis=1)
+                df0 = np.sum(np.where(mask_3way, three_way["df"], 0), axis=1)
+                t0 = np.sum(np.where(mask_3way, three_way["t0"].jd, 0), axis=1)
+                dt = time.TimeDelta(uplink_tx.jd - t0, format="jd").to("s").value  # type: ignore
+                freq += (f0 + df0 * dt) * obs.exp.setup.internal["tr_ratio"]
+
+                # Check for lack of coverage
+                holes = np.sum(mask_3way, axis=1) == 0
+            else:
+                holes = np.ones_like(obs.tstamps.jd, dtype=int)
+
+            # Fill holes in three-way ramping with one-way data
+            if np.any(holes) and obs.source.has_one_way_ramping:
+
+                one_way = obs.source.one_way_ramping
+                mask_1way = (
+                    (downlink_tx.jd[:, None] >= one_way["t0"].jd[None, :])  # type: ignore
+                    * (downlink_tx.jd[:, None] <= one_way["t1"].jd[None, :])  # type: ignore
+                    * holes[:, None]
+                )
+                f0 = np.sum(np.where(mask_1way, one_way["f0"], 0), axis=1)
+                df0 = np.sum(np.where(mask_1way, one_way["df"], 0), axis=1)
+                t0 = np.sum(np.where(mask_1way, one_way["t0"].jd, 0), axis=1)
+                dt = (
+                    time.TimeDelta(downlink_tx.jd - t0, format="jd")  # type: ignore
+                    .to("s")
+                    .value
+                )
+                freq += f0 + df0 * dt
+
+                # Re-check for lack of coverage
+                holes *= np.sum(mask_1way, axis=1) == 0
+
+            # Fill remaining holes with constant frequency
+            freq += np.where(holes, obs.source.default_frequency, 0)
+
+        assert freq.shape == tec.shape  # Sanity
+
+        return 5.308018e10 * tec / (4.0 * np.pi**2 * freq * freq)
 
 
 class ThermalDeformation(Delay):
@@ -742,6 +952,8 @@ class ThermalDeformation(Delay):
         return None
 
     def load_resources(self) -> dict[str, Any]:
+
+        log.debug(f"Loading resources for {self.name} delay")
 
         resources: dict[str, tuple["Antenna", Any]] = {}
 
@@ -823,6 +1035,10 @@ class ThermalDeformation(Delay):
             resources[station.name] = (_antenna, _thermo)
 
         return resources
+
+    def calculate(self, obs: "Observation") -> Any:
+
+        raise NotImplementedError("Missing calculate for thermal deformation")
 
     @staticmethod
     def humidity_model(temp_c: np.ndarray, wvp: np.ndarray) -> np.ndarray:

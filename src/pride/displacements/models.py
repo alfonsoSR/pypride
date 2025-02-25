@@ -19,9 +19,6 @@ class SolidTide(Displacement):
     requires_spice: bool = True
 
     def ensure_resources(self) -> None:
-        log.debug(
-            f"No external resources required for {self.name} displacement"
-        )
         return None
 
     def load_resources(
@@ -49,14 +46,16 @@ class SolidTide(Displacement):
 
         return resources
 
-    def calculate(self, epoch: "time.Time", resources: dict[str, Any]):
+    def calculate(
+        self, epoch: "time.Time", resources: dict[str, Any]
+    ) -> np.ndarray:
 
         # State vectors of station, Sun and Moon in ITRF
         xsta_itrf = resources["xsta_itrf"]
         xsun_itrf = resources["xsun_itrf"]
         xmoon_itrf = resources["xmoon_itrf"]
 
-        out = np.zeros_like(xsta_itrf)
+        out: np.ndarray = np.zeros_like(xsta_itrf)
         for idx, (ti, xsta, xsun, xmoon) in enumerate(
             zip(epoch, xsta_itrf, xsun_itrf, xmoon_itrf)
         ):
@@ -137,7 +136,9 @@ class OceanLoading(Displacement):
 
         return resources
 
-    def calculate(self, epoch: "time.Time", resources: dict[str, Any]):
+    def calculate(
+        self, epoch: "time.Time", resources: dict[str, Any]
+    ) -> np.ndarray:
 
         # Calculate ocean loading displacements
         dv, dw, ds = np.zeros((3, len(epoch)))
@@ -152,7 +153,10 @@ class OceanLoading(Displacement):
 
         # Convert displacements to ITRF
         disp_seu = np.array([ds, -dw, dv])
-        return (resources["seu2itrf"] @ disp_seu.T[:, :, None]).squeeze()
+        out: np.ndarray = (
+            resources["seu2itrf"] @ disp_seu.T[:, :, None]
+        ).squeeze()
+        return out
 
 
 class PoleTide(Displacement):
@@ -165,11 +169,6 @@ class PoleTide(Displacement):
     requires_spice: bool = False
 
     def ensure_resources(self) -> None:
-
-        log.debug(
-            f"No external resources required for {self.name} displacement"
-        )
-
         return None
 
     def load_resources(
@@ -196,7 +195,9 @@ class PoleTide(Displacement):
 
         return resources
 
-    def calculate(self, epoch: "time.Time", resources: dict[str, Any]):
+    def calculate(
+        self, epoch: "time.Time", resources: dict[str, Any]
+    ) -> np.ndarray:
 
         # Select IERS model based on epoch
         dt: np.ndarray = (epoch - J2000).to("year").value  # type: ignore
@@ -225,4 +226,7 @@ class PoleTide(Displacement):
         ).T
 
         # Convert displacements to ITRF
-        return (resources["seu2itrf"] @ disp_seu[:, :, None]).squeeze()
+        out: np.ndarray = (
+            resources["seu2itrf"] @ disp_seu[:, :, None]
+        ).squeeze()
+        return out
