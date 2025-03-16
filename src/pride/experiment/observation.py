@@ -3,10 +3,6 @@ import datetime
 from astropy import time
 from ..logger import log
 import numpy as np
-from ..delays import Tropospheric, Ionospheric, Geometric
-from .. import io
-from .source import NearFieldSource, FarFieldSource
-from nastro import plots as ng
 
 if TYPE_CHECKING:
     from .experiment import Experiment
@@ -41,6 +37,9 @@ class Observation:
         "source_ra",
         "source_dec",
         "tx_epochs",
+        "delays",
+        "delay_dict",
+        "has_delays",
     )
 
     def __init__(
@@ -82,6 +81,9 @@ class Observation:
         self.source_ra: "np.ndarray" = NotImplemented
         self.source_dec: "np.ndarray" = NotImplemented
         self.tx_epochs: "time.Time" = NotImplemented
+        self.delays: "np.ndarray" = NotImplemented
+        self.delay_dict: "dict" = NotImplemented
+        self.has_delays: bool = False
 
         return None
 
@@ -141,31 +143,29 @@ class Observation:
 
         val = super().__getattribute__(name)
         if val is NotImplemented:
-            log.error(f"Attribute {name} is not set for observation")
+            log.error(f"Attribute {name} is not set for {self.baseline.id}")
             exit(1)
         return val
 
-    def calculate_delays(self) -> Any:
+    def calculate_delays(self) -> None:
 
-        delays = self.exp.delay_models
-        delay = None
-        for _delay in delays:
-            if isinstance(_delay, Tropospheric):
-                delay = _delay
-                break
-        assert isinstance(delay, Tropospheric)
-
-        x = delay.calculate(self)
-        print(x)
-
-        with ng.SingleAxis() as fig:
-            fig.add_line(self.tstamps.jd, x)
+        if self.has_delays:
+            log.error(
+                "Attempted to calculate delays twice for observation of"
+                f" {self.source.name} from {self.station.name}"
+            )
+            exit(1)
 
         log.debug(
-            f"Calculating delays: {self.source.name} source "
-            f"from {self.station.name}"
+            f"Calculating delays of {self.source.name} from {self.station.name}"
         )
+        delay: np.ndarray = np.zeros_like(self.tstamps.jd)  # type: ignore
+        self.delay_dict = {}
+        for delay_model in self.exp.delay_models:
+            val = delay_model.calculate(self)
+            self.delay_dict[delay_model.name] = val
+            delay += val
+        self.delays = delay
+        self.has_delays = True
 
-        exit(0)
-
-        return NotImplemented
+        return None

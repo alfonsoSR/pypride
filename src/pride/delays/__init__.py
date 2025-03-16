@@ -1,4 +1,4 @@
-from .models import Geometric, Tropospheric, Ionospheric, ThermalDeformation
+from .models import Geometric, Tropospheric, Ionospheric, AntennaDelays
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -8,7 +8,7 @@ DELAY_MODELS: dict[str, type["Delay"]] = {
     Geometric.name: Geometric,
     Tropospheric.name: Tropospheric,
     Ionospheric.name: Ionospheric,
-    ThermalDeformation.name: ThermalDeformation,
+    AntennaDelays.name: AntennaDelays,
 }
 
 __all__ = ["DELAY_MODELS"]

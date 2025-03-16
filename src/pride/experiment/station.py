@@ -7,6 +7,8 @@ from .. import coordinates as coord
 from scipy import interpolate
 import spiceypy as spice
 from ..constants import J2000
+from ..io import VEX_DATE_FORMAT
+from datetime import datetime
 
 if TYPE_CHECKING:
     from .experiment import Experiment
@@ -26,9 +28,11 @@ class Station:
 
     __slots__ = (
         "name",
+        "id",
         "possible_names",
         "is_phase_center",
         "is_uplink",
+        "clock_data",
         "has_tectonic_correction",
         "has_geophysical_corrections",
         "exp",
@@ -41,10 +45,11 @@ class Station:
         "_interp_vsta_icrf",
     )
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, id: str | None = None) -> None:
 
         # Reference and alternative names
         self.name = name
+        self.id: str = id if id is not None else NotImplemented
         self.possible_names = [name]
         alternative_names = io.load_catalog("station_names.yaml")
         if name in alternative_names:
@@ -58,6 +63,7 @@ class Station:
 
         # Optional attributes
         self.exp: "Experiment" = NotImplemented
+        self.clock_data: tuple[datetime, float, float] = NotImplemented
         self._ref_epoch: time.Time = NotImplemented
         self._ref_location: np.ndarray = NotImplemented
         self._ref_velocity: np.ndarray = NotImplemented
@@ -78,10 +84,10 @@ class Station:
 
     @staticmethod
     def from_experiment(
-        name: str, experiment: "Experiment", uplink: bool = False
+        name: str, id: str, experiment: "Experiment", uplink: bool = False
     ) -> "Station":
 
-        station = Station(name)
+        station = Station(name, id)
         setup = experiment.setup
         station.exp = experiment
 
@@ -100,6 +106,21 @@ class Station:
         # Check if station is uplink
         if uplink:
             station.is_uplink = True
+
+        # Update with clock information
+        if "CLOCK" not in experiment.vex:
+            log.error(
+                f"Failed to initialize {station.name} station: "
+                "Clock information not found in VEX file"
+            )
+            exit(1)
+
+        id = station.id.upper()
+        _offset, _epoch, _rate = experiment.vex["CLOCK"][id]["clock_early"][1:4]
+        epoch = datetime.strptime(_epoch, VEX_DATE_FORMAT)
+        offset = float(_offset.split()[0]) * 1e-6
+        rate = float(_rate) * 1e-6
+        station.clock_data = (epoch, offset, rate)
 
         # Station coordinates at reference epoch
         with io.internal_file(

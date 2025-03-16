@@ -162,7 +162,10 @@ class Constants:
             self.GSUN = 0.295912208285591095e-03 * AU_DE405**3 / 86400.0**2
             self.MU = 0.813005600000000044e02 ** (-1)
             self.GEARTH = (
-                0.899701134671249882e-09 * AU_DE405**3 / 86400.0**2 / (1 + self.MU)
+                0.899701134671249882e-09
+                * AU_DE405**3
+                / 86400.0**2
+                / (1 + self.MU)
             )
             self.GMOON = self.GEARTH * self.MU
             self.GMPlanet = [
@@ -180,7 +183,10 @@ class Constants:
             self.GSUN = 0.295912208285591095e-03 * AU_DE405**3 / 86400.0**2
             self.MU = 0.813005600000000044e02 ** (-1)
             self.GEARTH = (
-                0.899701134671249882e-09 * AU_DE405**3 / 86400.0**2 / (1 + self.MU)
+                0.899701134671249882e-09
+                * AU_DE405**3
+                / 86400.0**2
+                / (1 + self.MU)
             )
             self.GMOON = self.GEARTH * self.MU
             self.GMPlanet = [
@@ -199,7 +205,10 @@ class Constants:
             self.GSUN = 0.295912208285591100e-03 * AU_DE421**3 / 86400.0**2
             self.MU = 0.813005690699153000e02 ** (-1)
             self.GEARTH = (
-                0.899701140826804900e-09 * AU_DE421**3 / 86400.0**2 / (1 + self.MU)
+                0.899701140826804900e-09
+                * AU_DE421**3
+                / 86400.0**2
+                / (1 + self.MU)
             )
             self.GMOON = self.GEARTH * self.MU
             self.GMPlanet = [
@@ -218,7 +227,10 @@ class Constants:
             self.GSUN = 0.295912208285591100e-03 * AU_DE430**3 / 86400.0**2
             self.MU = 0.813005690741906200e02 ** (-1)
             self.GEARTH = (
-                0.899701139019987100e-09 * AU_DE430**3 / 86400.0**2 / (1 + self.MU)
+                0.899701139019987100e-09
+                * AU_DE430**3
+                / 86400.0**2
+                / (1 + self.MU)
             )
             self.GMOON = self.GEARTH * self.MU
             self.GMPlanet = [
@@ -237,7 +249,10 @@ class Constants:
             self.GSUN = 0.295912208284119560e-03 * AU_DE440**3 / 86400**2
             self.MU = 0.813005682214972e02 ** (-1)
             self.GEARTH = (
-                0.899701139294734660e-09 * AU_DE440**3 / 86400**2 / (1 + self.MU)
+                0.899701139294734660e-09
+                * AU_DE440**3
+                / 86400**2
+                / (1 + self.MU)
             )
             self.GMOON = self.GEARTH * self.MU
             self.GMPlanet = [
@@ -270,7 +285,9 @@ class Constants:
                 0.2166807318808926e-11 * AU_13c**3 / 86400.0**2,
             ]
         else:
-            raise ValueError(f"Version {jpl_eph} of JPL ephemeris is not supported")
+            raise ValueError(
+                f"Version {jpl_eph} of JPL ephemeris is not supported"
+            )
 
         self.TDB_TCB = 1.0 + self.L_B  # F^-1
         # G*masses in TCB-frame!
@@ -288,7 +305,13 @@ class Constants:
         )
         # G*masses in TDB-frame!
         self.GM = np.hstack(
-            [self.GMPlanet[0:2], self.GEARTH, self.GMPlanet[2:], self.GMOON, self.GSUN]
+            [
+                self.GMPlanet[0:2],
+                self.GEARTH,
+                self.GMPlanet[2:],
+                self.GMOON,
+                self.GSUN,
+            ]
         )
 
         return None
@@ -319,10 +342,14 @@ class Constants:
                     version = line.split("/")[-1].split(".")[0]
                     break
         if version == "":
-            raise ValueError("Failed to read ephemerides version from meta-kernel")
+            raise ValueError(
+                "Failed to read ephemerides version from meta-kernel"
+            )
 
         if version not in Constants.VALID_VERSIONS.__args__:
-            raise ValueError(f"Version {version} of JPL ephemeris is not supported")
+            raise ValueError(
+                f"Version {version} of JPL ephemeris is not supported"
+            )
 
         return Constants(version)
 

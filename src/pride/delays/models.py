@@ -9,6 +9,7 @@ import unlzw3
 import gzip
 import numpy as np
 from scipy import interpolate
+
 from ..types import Antenna
 from ..external import vienna
 from nastro import plots as ng
@@ -114,9 +115,9 @@ class Geometric(Delay):
         NOTE: This function assumes that the phase center is the geocenter.
         """
 
-        log.warning(
-            "Implementation of near-field geometric delay is not reliable"
-        )
+        # log.warning(
+        #     "Implementation of near-field geometric delay is not reliable"
+        # )
 
         # Sanity
         source = obs.source
@@ -154,8 +155,8 @@ class Geometric(Delay):
         )
 
         # Calculate gravitational parameter of celestial bodies
-        bodies: list = self.exp.setup.internal["lt_correction_bodies"]
-        bodies.pop(bodies.index("earth"))
+        _bodies: list = self.exp.setup.internal["lt_correction_bodies"]
+        bodies = [bi for bi in _bodies if bi != "earth"]
         bodies_gm = (
             np.array([spice.bodvrd(body, "GM", 1)[1][0] for body in bodies])
             * 1e9
@@ -260,13 +261,13 @@ class Geometric(Delay):
         rx1 = rx_station
         et_rx1 = (rx1 - J2000.tdb).to("s").value  # type: ignore
         searth_bcrf_rx1 = (
-            np.array([spice.spkezr("EARTH", et_rx1, "J2000", "NONE", "SSB")[0]])
+            np.array(spice.spkezr("EARTH", et_rx1, "J2000", "NONE", "SSB")[0])
             * 1e3
         )
         xearth_bcrf_rx1 = searth_bcrf_rx1[:, :3]
         vearth_bcrf_rx1 = searth_bcrf_rx1[:, 3:]
         xsun_bcrf_rx1 = (
-            np.array([spice.spkpos("SUN", et_rx1, "J2000", "NONE", "SSB")[0]])
+            np.array(spice.spkpos("SUN", et_rx1, "J2000", "NONE", "SSB")[0])
             * 1e3
         )
         U_earth = (
@@ -276,9 +277,9 @@ class Geometric(Delay):
         )
         xsta_bcrf_rx1 = (
             xearth_bcrf_rx1
-            + (1.0 - U_earth / clight2 - L_C) * xsta_gcrf_rx1
+            + (1.0 - U_earth[:, None] / clight2 - L_C) * xsta_gcrf_rx1
             - 0.5
-            * np.sum(vearth_bcrf_rx1 * xsta_gcrf_rx1, axis=-1)
+            * np.sum(vearth_bcrf_rx1 * xsta_gcrf_rx1, axis=-1)[:, None]
             * vearth_bcrf_rx1
             / clight2
         )
@@ -287,7 +288,7 @@ class Geometric(Delay):
         rx2 = rx_np1
         et_rx2 = (rx2 - J2000.tdb).to("s").value  # type: ignore
         xphc_bcrf_rx2 = (
-            np.array([spice.spkpos("EARTH", et_rx2, "J2000", "NONE", "SSB")[0]])
+            np.array(spice.spkpos("EARTH", et_rx2, "J2000", "NONE", "SSB")[0])
             * 1e3
         )
 
@@ -346,7 +347,7 @@ class Geometric(Delay):
         vearth_mag = np.linalg.norm(vearth_bcrf_rx1, axis=-1)
         baseline = -xsta_gcrf_rx1
         v2 = 0.0 * vearth_bcrf_rx1  # Velocity of phase center in GCRF
-        return (
+        return -(
             (dt + tg_12)
             * (1 - (0.5 * vearth_mag * vearth_mag + U_earth) / clight2)
             / (1.0 - L_C)
@@ -363,9 +364,108 @@ class Geometric(Delay):
         source = obs.source
         assert isinstance(source, FarFieldSource)
 
-        # Calculate BCRF position of station at RX
+        # Initialization
+        clight = spice.clight() * 1e3
+        clight2 = clight * clight
 
-        raise NotImplementedError("Missing calculate for farfield geometric")
+        # Calculate baseline vector [For geocenter phase center it is just
+        # the GCRF position of the station at RX]
+        baseline = obs.station.location(obs.tstamps, frame="icrf")
+        xsta_gcrf_rx = baseline
+
+        # Calculate potential at geocenter
+        et_rx: np.ndarray = (obs.tstamps.tdb - J2000.tdb).to("s").value  # type: ignore
+        searth_bcrf_rx = (
+            np.array(spice.spkezr("EARTH", et_rx, "J2000", "NONE", "SSB")[0])
+            * 1e3
+        )
+        xearth_bcrf_rx = searth_bcrf_rx[:, :3]
+        vearth_bcrf_rx = searth_bcrf_rx[:, 3:]
+        xsun_bcrf_rx = (
+            np.array(spice.spkpos("SUN", et_rx, "J2000", "NONE", "SSB")[0])
+            * 1e3
+        )
+        gm_sun = spice.bodvrd("SUN", "GM", 1)[1][0] * 1e9
+        U_earth = gm_sun / np.linalg.norm(
+            xsun_bcrf_rx - xearth_bcrf_rx, axis=-1
+        )
+
+        # Calculate BCRF position of station at RX
+        xsta_bcrf_rx = (
+            xearth_bcrf_rx
+            + (1.0 - U_earth[:, None] / clight2 - L_C) * xsta_gcrf_rx
+            - 0.5
+            * np.sum(vearth_bcrf_rx * xsta_gcrf_rx, axis=-1)[:, None]
+            * vearth_bcrf_rx
+            / clight2
+        )
+
+        # Position of phase center is just that of Earth for geocenter
+        xphc_bcrf_rx = xearth_bcrf_rx
+
+        # Calculate gravitational correction using IERS algorithm
+        #######################################################################
+        _bodies = self.exp.setup.internal["lt_correction_bodies"]
+        bodies = [bi for bi in _bodies if bi != "earth"]
+        bodies_gm = (
+            np.array([spice.bodvrd(body, "GM", 1)[1][0] for body in bodies])
+            * 1e9
+        )
+        xbodies_bcrf_rx = np.array(
+            [
+                np.array(spice.spkpos(body, et_rx, "J2000", "NONE", "SSB")[0])
+                * 1e3
+                for body in bodies
+            ]
+        )
+        xbodies_sta_bcrf_rx = xbodies_bcrf_rx - xsta_bcrf_rx
+
+        # Estimate time of closest approach to planets
+        ks = obs.source.observed_ks  # Pointing vector
+        et_planets = (
+            et_rx
+            - np.sum(ks[None, None, :] * xbodies_sta_bcrf_rx, axis=-1) / clight
+        )
+        et_closest = np.where(et_rx[None, :] < et_planets, et_rx, et_planets)
+
+        # Calculate position of celestial bodies at closest approach
+        xbodies_bcrf_closest = np.array(
+            [
+                np.array(spice.spkpos(body, et_body, "J2000", "NONE", "SSB")[0])
+                * 1e3
+                for body, et_body in zip(bodies, et_closest)
+            ]
+        )
+
+        # Calculate correction
+        r1j = xsta_bcrf_rx[None, :, :] - xbodies_bcrf_closest
+        r1j_mag = np.linalg.norm(r1j, axis=-1)
+        k_r1j = np.sum(ks[None, None, :] * r1j, axis=-1)
+        r2j = (
+            xphc_bcrf_rx[None, :, :]
+            - np.sum(ks[None, :] * baseline, axis=-1)[None, :, None]
+            * vearth_bcrf_rx[None, :, :]
+            / clight
+            - xbodies_bcrf_closest
+        )
+        r2j_mag = np.linalg.norm(r2j, axis=-1)
+        k_r2j = np.sum(ks[None, :] * r2j, axis=-1)
+        gmc = 2.0 * bodies_gm[:, None] / (clight * clight2)
+        T_g = np.sum(
+            gmc * np.log((r1j_mag + k_r1j) / (r2j_mag + k_r2j)), axis=0
+        )
+
+        # Calculate delay in TT
+        ks_b = np.sum(ks[None, :] * baseline, axis=-1)
+        ks_vearth = np.sum(ks[None, :] * vearth_bcrf_rx, axis=-1)
+        vearth_b = np.sum(vearth_bcrf_rx * baseline, axis=-1)
+        vearth_mag2 = np.linalg.norm(vearth_bcrf_rx, axis=-1) ** 2
+        return (
+            T_g
+            - (ks_b / clight)
+            * (1.0 - (2.0 * U_earth / clight2) - (0.5 * vearth_mag2 / clight2))
+            - (vearth_b / clight2) * (1.0 + 0.5 * ks_vearth / clight)
+        ) / (1.0 + ks_vearth / clight)
 
     def calculate(self, obs: "Observation") -> Any:
 
@@ -876,8 +976,8 @@ class Ionospheric(Delay):
         return 5.308018e10 * tec / (4.0 * np.pi**2 * freq * freq)
 
 
-class ThermalDeformation(Delay):
-    """Thermal deformation of antennas
+class AntennaDelays(Delay):
+    """Delays due geometry and deformation of antennas
 
     # Available models
     ## Nothnagel
@@ -888,7 +988,7 @@ class ThermalDeformation(Delay):
     - Antenna information: Focus type, mount type, foundation height and thermal expansion coefficient and reference temperature
     """
 
-    name = "ThermalDeformation"
+    name = "AntennaDelays"
     etc = {
         "url": "https://vmf.geo.tuwien.ac.at/trop_products",
     }
@@ -1037,8 +1137,270 @@ class ThermalDeformation(Delay):
         return resources
 
     def calculate(self, obs: "Observation") -> Any:
+        """Groups thermal deformation and antenna axis offset"""
 
-        raise NotImplementedError("Missing calculate for thermal deformation")
+        dt_axis_offset = self.calculate_axis_offset(obs)
+        dt_thermal_deformation = self.calculate_thermal_deformation(obs)
+        return dt_axis_offset + dt_thermal_deformation
+
+    def calculate_axis_offset(self, obs: "Observation") -> Any:
+
+        # Load resources
+        resources = self.loaded_resources[obs.station.name]
+        antenna: Antenna = resources[0]
+        if resources[1] is None:
+            log.warning(f"{self.name} delay set to zero for {obs.station.name}")
+            return np.zeros_like(obs.tstamps.jd)
+        thermo: dict[str, Any] = resources[1]
+        clight = spice.clight() * 1e3
+
+        # Geodetic coordinates of station
+        assert obs.tstamps.location is not None  # Sanity
+        coords = obs.tstamps.location.to_geodetic("GRS80")
+        lat: np.ndarray = np.array(coords.lat.rad, dtype=float)  # type: ignore
+        lon: np.ndarray = np.array(coords.lon.rad, dtype=float)  # type: ignore
+
+        # Determine unit vector along antenna fixed axis in VEN
+        match antenna.mount_type:
+            case "MO_AZEL":
+                ax_uvec = np.array([1.0, 0.0, 0.0])[None, :]
+            case "MO_EQUA":
+                ax_uvec = np.array([np.sin(lat), 0.0 * lat, np.cos(lat)]).T
+            case "MO_XYNO":
+                ax_uvec = np.array([0.0, 0.0, 1.0])[None, :]
+            case "MO_XYEA":
+                ax_uvec = np.array([0.0, 1.0, 0.0])[None, :]
+            case "MO_RICH":
+                phi_0 = np.deg2rad(39.06)  # From Nothnagel (2009)
+                delta_lambda = np.deg2rad(0.12)  # From Nothnagel (2009)
+                ax_uvec = np.array(
+                    [
+                        np.sin(phi_0),
+                        -np.cos(phi_0) * np.sin(delta_lambda),
+                        np.cos(phi_0) * np.cos(delta_lambda),
+                    ]
+                )[None, :]
+            case _:
+                log.error(
+                    f"Failed to calculate {self.name} delay for "
+                    f"{antenna.ivs_name}: Invalid mount type"
+                )
+                exit(1)
+
+        # Atmospheric conditions
+        p = thermo["p"](obs.tstamps.mjd)
+        p_hpa = p * 760.0 / 1013.25
+        temp_k = thermo["TC"](obs.tstamps.mjd) + 273.16
+        hum = thermo["hum"](obs.tstamps.mjd) / 100.0
+
+        # Aberrated pointing vector corrected for atmospheric refraction
+        rho = self.atmospheric_bending_angle(obs.source_el, temp_k, hum, p_hpa)
+        zenith = 0.5 * np.pi - obs.source_el
+        ks_vec = np.array(
+            [
+                np.cos(zenith - rho),
+                np.sin(zenith - rho) * np.sin(obs.source_az),
+                np.sin(zenith - rho) * np.cos(obs.source_az),
+            ]
+        ).T
+        ks_uvec = ks_vec / np.linalg.norm(ks_vec, axis=-1)[:, None]
+
+        # Axis offset vector in VEN
+        ao_vec = np.cross(
+            ax_uvec,
+            np.cross(ks_uvec, ax_uvec, axis=-1),
+            axis=-1,
+        )
+        ao_uvec = ao_vec / np.linalg.norm(ao_vec, axis=-1)[:, None]
+
+        # Axis offset delay
+        n_air = 77.6e-6 * p / temp_k + 1.0  # Refractive index of the air
+        return -antenna.AO * np.sum(ks_uvec * ao_uvec, axis=-1) / clight * n_air
+
+    @staticmethod
+    def atmospheric_bending_angle(
+        el: np.ndarray, temp: np.ndarray, hum: np.ndarray, p: np.ndarray
+    ) -> np.ndarray:
+        """Calculate atmospheric bending angle
+
+        UNKNOWN MODEL - ORIGINAL CODE FROM DIMA'S PROGRAM
+
+        :param el: Elevation of source [rad]
+        :param temp: Temperature at station location [K]
+        :param hum: Relative humidity at station location [%]
+        :param p: Pressure at station location [mmHg = hPa]
+        :return: Atmospheric bending angle [rad]
+        """
+        # log.debug("Missing source of atmospheric bending angle model")
+
+        CDEGRAD = 0.017453292519943295
+        CARCRAD = 4.84813681109536e-06
+
+        a1 = 0.40816
+        a2 = 112.30
+        b1 = 0.12820
+        b2 = 142.88
+        c1 = 0.80000
+        c2 = 99.344
+        e = [
+            46.625,
+            45.375,
+            4.1572,
+            1.4468,
+            0.25391,
+            2.2716,
+            -1.3465,
+            -4.3877,
+            3.1484,
+            4.5201,
+            -1.8982,
+            0.89000,
+        ]
+        p1 = 760.0
+        t1 = 273.0
+        w = [22000.0, 17.149, 4684.1, 38.450]
+        z1 = 91.870
+
+        # Zenith angle in degrees
+        z2 = np.rad2deg(0.5 * np.pi - el)
+        # Temperature in Kelvin
+        t2 = temp
+        # Fractional humidity (0.0 -> 1.0)
+        r = hum
+        # Pressure in mm of Hg
+        p2 = p
+
+        # CALCULATE CORRECTIONS FOR PRES, TEMP, AND WETNESS
+        d3 = 1.0 + (z2 - z1) * np.exp(c1 * (z2 - c2))
+        fp = (p2 / p1) * (1.0 - (p2 - p1) * np.exp(a1 * (z2 - a2)) / d3)
+        ft = (t1 / t2) * (1.0 - (t2 - t1) * np.exp(b1 * (z2 - b2)))
+        fw = 1.0 + (
+            w[0] * r * np.exp((w[1] * t2 - w[2]) / (t2 - w[3])) / (t2 * p2)
+        )
+
+        # CALCULATE OPTICAL REFRACTION
+        u = (z2 - e[0]) / e[1]
+        x = e[10]
+        for i in range(8):
+            x = e[9 - i] + u * x
+
+        # COMBINE FACTORS AND FINISH OPTICAL FACTOR
+        return (ft * fp * fw * (np.exp(x / d3) - e[11])) * CARCRAD
+
+    def calculate_thermal_deformation(self, obs: "Observation") -> Any:
+        """MODEL FROM DIMA'S CODE :: MISSING SOURCE"""
+
+        # Load resources
+        resources = self.loaded_resources[obs.station.name]
+        antenna: Antenna = resources[0]
+        thermo: dict[str, Any] = resources[1]
+        if thermo is None:
+            log.warning(f"{self.name} delay set to zero for {obs.station.name}")
+            return np.zeros_like(obs.tstamps.jd)
+
+        # Antenna focus factor based on focus type [See Nothnagel (2009)]
+        match antenna.focus_type:
+            case "FO_PRIM":
+                focus_factor = 0.9
+            case "FO_SECN":
+                focus_factor = 1.8
+            case _:
+                log.error(
+                    f"Failed to calculate {self.name} delay for "
+                    f"{antenna.ivs_name}: Invalid focus type"
+                )
+                exit(1)
+
+        # Interpolate atmospheric data at observation epochs
+        temp = thermo["TC"](obs.tstamps.mjd)
+        dT = temp - antenna.T0
+
+        # Azimuth and elevation of source
+        el: np.ndarray = obs.source_el
+        ra: np.ndarray = obs.source_ra
+        dec: np.ndarray = obs.source_dec
+
+        # Calculate
+        clight = spice.clight() * 1e3
+        match antenna.mount_type:
+            case "MO_AZEL":
+                return (
+                    antenna.gamma_hf * dT * antenna.hf * np.sin(el)
+                    + antenna.gamma_hp
+                    * dT
+                    * (
+                        antenna.hp * np.sin(el)
+                        + antenna.AO * np.cos(el)
+                        + antenna.hv
+                        - focus_factor * antenna.hs
+                    )
+                ) / clight
+            case "MO_EQUA":
+                return (
+                    antenna.gamma_hf * dT * antenna.hf * np.sin(el)
+                    + antenna.gamma_hp
+                    * dT
+                    * (
+                        antenna.hp * np.sin(el)
+                        + antenna.AO * np.cos(dec)
+                        + antenna.hv
+                        - focus_factor * antenna.hs
+                    )
+                ) / clight
+            case "MO_XYNO" | "MO_XYEA":
+                print("using this one")
+                return (
+                    antenna.gamma_hf * dT * antenna.hf * np.sin(el)
+                    + antenna.gamma_hp
+                    * dT
+                    * (
+                        antenna.hp * np.sin(el)
+                        + antenna.AO
+                        * np.sqrt(
+                            1.0
+                            - np.cos(el) * np.cos(el) * np.cos(ra) * np.cos(ra)
+                        )
+                        + antenna.hv
+                        - focus_factor * antenna.hs
+                    )
+                ) / clight
+            case "MO_RICH":  # Misplaced equatorial (RICHMOND)
+
+                # Error of the fixed axis and inclination wrt local horizon
+                # Taken from Nothnagel (2009), for RICHMOND antenna
+                phi_0 = np.deg2rad(39.06)
+                delta_lambda = np.deg2rad(-0.12)
+
+                return (
+                    antenna.gamma_hf * dT * antenna.hf * np.sin(el)
+                    + antenna.gamma_hp
+                    * dT
+                    * (
+                        antenna.hp * np.sin(el)
+                        + antenna.AO
+                        * np.sqrt(
+                            1.0
+                            - (
+                                np.sin(el) * np.sin(phi_0)
+                                + np.cos(el)
+                                * np.cos(phi_0)
+                                * (
+                                    np.cos(ra) * np.cos(delta_lambda)
+                                    + np.sin(ra) * np.sin(delta_lambda)
+                                )
+                            )
+                            ** 2
+                        )
+                        + antenna.hv
+                        - focus_factor * antenna.hs
+                    )
+                ) / clight
+            case _:
+                log.error(
+                    f"Failed to calculate {self.name} delay for "
+                    f"{antenna.ivs_name}: Invalid mount type"
+                )
+                exit(1)
 
     @staticmethod
     def humidity_model(temp_c: np.ndarray, wvp: np.ndarray) -> np.ndarray:

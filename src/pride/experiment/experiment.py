@@ -2,7 +2,14 @@ from typing import TYPE_CHECKING, Generator, Any
 from pathlib import Path
 from contextlib import contextmanager
 import spiceypy as spice
-from ..io import Setup, Vex, load_catalog, internal_file, get_target_information
+from ..io import (
+    Setup,
+    Vex,
+    load_catalog,
+    VEX_DATE_FORMAT,
+    get_target_information,
+    DelFile,
+)
 from ..logger import log
 from astropy import time
 import datetime
@@ -15,6 +22,7 @@ from .station import Station
 from .baseline import Baseline
 from .observation import Observation
 import math
+import numpy as np
 
 if TYPE_CHECKING:
     from ..displacements.core import Displacement
@@ -54,6 +62,9 @@ class Experiment:
             for mode in self.vex["MODE"]
         }
 
+        # Clock offsets
+        self.clock_offsets = self.load_clock_offsets()
+
         # EOPs: For transformations between ITRF and ICRF
         self.eops = EOP.from_experiment(self)
 
@@ -64,8 +75,14 @@ class Experiment:
         self.sources = self.load_sources()
 
         # Define phase center
+        if self.setup.general["phase_center"] != "GEOCENTR":
+            log.error(
+                f"Failed to initialize {self.name} experiment: "
+                "Using a station as phase center is currently not supported"
+            )
+            exit(1)
         self.phase_center = Station.from_experiment(
-            self.setup.general["phase_center"], self
+            self.setup.general["phase_center"], "00", self
         )
 
         # Initialize baselines
@@ -249,7 +266,7 @@ class Experiment:
         _ids = reversed(list(_experiment_stations.keys()))
         _names = reversed(list(_experiment_stations.values()))
         _baselines: dict[str, "Baseline"] = {
-            k: Baseline(self.phase_center, Station.from_experiment(v, self))
+            k: Baseline(self.phase_center, Station.from_experiment(v, k, self))
             for k, v in reversed(dict(zip(_ids, _names)).items())
         }
 
@@ -352,6 +369,21 @@ class Experiment:
 
         return list(_baselines.values())
 
+    def load_clock_offsets(self):
+        """Load clock offset data from VEX"""
+
+        if "CLOCK" not in self.vex:
+            return {}
+
+        clock: dict[str, tuple[datetime.datetime, float, float]] = {}
+        for station, data in self.vex["CLOCK"].items():
+            _offset, _epoch, _rate = data["clock_early"][1:4]
+            epoch = datetime.datetime.strptime(_epoch, VEX_DATE_FORMAT)
+            offset = float(_offset.split()[0]) * 1e-6
+            rate = float(_rate) * 1e-6
+            clock[station.title()] = (epoch, offset, rate)
+        return clock
+
     @contextmanager
     def spice_kernels(self) -> Generator:
         """Context manager to load SPICE kernels"""
@@ -371,5 +403,92 @@ class Experiment:
             if self.requires_spice:
                 log.debug("Unloaded SPICE kernels")
                 spice.kclear()
+
+        return None
+
+    def save_output(self) -> None:
+
+        # Initialize output directory
+        outdir = Path(self.setup.general["output_directory"]).resolve()
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        # Output files and observations
+        observations: dict[tuple[str, str], "Observation"] = {}
+        output_files: dict[str, "DelFile"] = {}
+        for baseline in self.baselines:
+
+            # Station code
+            code = baseline.station.id.title()
+
+            # Initialize output file for observation
+            output_files[code] = DelFile(outdir / f"{self.name}_{code}.del")
+            output_files[code].create_file(code)
+
+            # Add observations to dictionary
+            for observation in baseline.observations:
+                observations[(code, observation.source.name)] = observation
+
+        # Main loop
+        sorted_scans = sorted([s for s in self.vex["SCHED"]])
+        for scan_id in sorted_scans:
+
+            # IDs of stations involved in scan
+            scan_data = self.vex["SCHED"][scan_id].getall("station")
+            scan_stations = [s[0] for s in scan_data]
+
+            # VEX-file and internal ID of source
+            _scan_sources = [self.vex["SCHED"][scan_id]["source"]]
+            if len(_scan_sources) != 1:
+                log.error(f"Scan {scan_id} has multiple sources")
+                exit(1)
+            scan_source_id = _scan_sources[0]  # ID from VEX file
+
+            _source_data = self.vex["SOURCE"][scan_source_id]
+            if _source_data["source_type"] == "target":
+                scan_source = self.target["short_name"]  # Internal ID
+            else:
+                scan_source = scan_source_id  # Internal ID
+
+            # Loop over stations in scan
+            for station_id in scan_stations:
+
+                # Get observation for this scan
+                assert (station_id, scan_source) in observations  # Sanity
+                observation = observations[(station_id, scan_source)]
+
+                # Initial and final epochs for scan
+                t0 = time.Time.strptime(
+                    self.vex["SCHED"][scan_id]["start"], VEX_DATE_FORMAT
+                )
+                dt = time.TimeDelta(
+                    int(scan_data[0][2].split()[0]), format="sec"
+                )
+                tend = t0 + dt
+
+                # Timestamps and delays of current scan
+                scan_mask = (observation.tstamps >= t0) & (
+                    observation.tstamps <= tend
+                )
+                scan_tstamps = observation.tstamps[scan_mask]
+                scan_delays = observation.delays[scan_mask]
+
+                # Get integral part of MJD
+                _mjd = np.array(scan_tstamps.mjd, dtype=int)  # type: ignore
+                mjd1 = _mjd[0]
+
+                # Fractional part of MJD in seconds
+                mjd_diff = time.TimeDelta(_mjd - mjd1, format="jd")
+                _mjd2 = time.TimeDelta(scan_tstamps.jd2 + 0.5, format="jd")  # type: ignore
+                mjd2 = (mjd_diff + _mjd2).to("s").value  # type: ignore
+
+                # Write data to output file
+                # NOTE: Current version of the program does not include
+                # Doppler shifts or UVW projections. These entries are set
+                # to zero (to 1 for the amplitude of the Doppler shift)
+                zero = np.zeros_like(mjd2)
+                data = np.array(
+                    [mjd2, zero, zero, zero, scan_delays, zero, zero + 1.0]
+                ).T
+                output_files[station_id].add_scan(scan_source_id, mjd1, data)
 
         return None
