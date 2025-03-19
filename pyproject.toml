@@ -16,7 +16,8 @@ dependencies = [
     "spiceypy>=6.0.0",
     "unlzw3>=0.2.2",
     "ply>=3.11",
-    "multidict>=6.1.0"
+    "multidict>=6.1.0",
+    "nastro>=0.0.4"
 ]
 name = "pride"
 version = "0.1.0"
