@@ -15,3 +15,9 @@ You can find an example application under `examples`. You should be able to run 
 The first time you run the program it will take a little bit because it has to download kernels and data files. If you already have the data files and kernels available, the execution should take about 3 minutes.
 
 If you want to turn off the DEBUG logs, you can set the log level to `INFO` in `main.py`
+
+## Credit
+
+- Original author: [Dimitry Duev](https://github.com/dmitryduev)
+- Original Python 3 Version: [Guifre Molera](https://gitlab.com/gofrito)
+- 2025 Version & Current Maintainer: [Alfonso Sánchez Rodríguez](https://github.com/alfonsoSR)
