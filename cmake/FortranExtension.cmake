@@ -1,4 +1,4 @@
-macro (add_extension source_dir output_dir)
+macro (fortran_extension source_dir output_dir)
 
     # Get fortran and signature files
     file(GLOB fortran_files ${source_dir}/*.F ${source_dir}/*.f90)
@@ -22,19 +22,17 @@ macro (add_extension source_dir output_dir)
         )
     endif()
 
-    message(
-        STATUS
-        "${Python_EXECUTABLE} -m numpy.f2py -c ${signature_files} ${fortran_files} --backend meson"
-    )
+    # Get name of extension from .pyf file
+    # get_filename_component(extension_name ${signature_files} NAME_WE)
 
-    # Compile and install extension
+    # Compile fortran extension using f2py
     execute_process(
         COMMAND
             ${Python_EXECUTABLE} -m numpy.f2py
             -c ${signature_files} ${fortran_files}
             --backend meson
         WORKING_DIRECTORY
-            ${output_dir}
+            ${PRIDE_SOURCE_DIR}/${output_dir}
     )
 
 endmacro()

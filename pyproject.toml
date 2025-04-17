@@ -2,7 +2,8 @@
 requires = [
     "scikit-build-core",
     "numpy",
-    "meson"
+    "meson",
+    "charset_normalizer"
 ]
 build-backend = "scikit_build_core.build"
 

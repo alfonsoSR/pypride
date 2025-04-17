@@ -14,10 +14,14 @@ set(PRIDE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/pride")
 
 # Import add_extension macro
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-include(AddExtension)
+include(FortranExtension)
 
-# Add extensions
-add_extension(${IERS_SOURCE_DIR}/dehanttideinel ${PRIDE_SOURCE_DIR}/external/iers)
-add_extension(${IERS_SOURCE_DIR}/eops ${PRIDE_SOURCE_DIR}/external/iers)
-add_extension(${IERS_SOURCE_DIR}/hardisp ${PRIDE_SOURCE_DIR}/external/iers)
-add_extension(${VIENNA_SOURCE_DIR}/vmf3 ${PRIDE_SOURCE_DIR}/external/vienna)
+fortran_extension(${IERS_SOURCE_DIR}/dehanttideinel external/iers)
+fortran_extension(${IERS_SOURCE_DIR}/eops external/iers)
+fortran_extension(${IERS_SOURCE_DIR}/hardisp external/iers)
+fortran_extension(${VIENNA_SOURCE_DIR}/vmf3 external/vienna)
+
+install(
+    DIRECTORY ${PRIDE_SOURCE_DIR}
+    DESTINATION .
+)
