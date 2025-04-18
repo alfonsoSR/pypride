@@ -8,6 +8,15 @@ cd pypride
 pip3 install .
 ```
 
+## Usage
+
+PRIDE will be updated with a command line interface in the near future. For the time being, the easiest way to use it is to take the code in `examples/main.py` as reference, and perform the following modifications in the `Experiment` section of `examples/config.yaml`:
+- Set `vex` to the path to your VEX file
+- Set `target` to a name of your target that can be recognized by SPICE
+- Set `output_directory` to the path of your desired output directory. It will be created if it does not exist.
+
+That's it! If you now run `examples/main.py` you will get the `.del` files in your chosen output directory.
+
 ## Example
 
 You can find an example application under `examples`. You should be able to run the program `main.py` to calculate the delays for the GR035 experiment. Binary output files will be saved to `examples/output-gr035`. You can use the script `examine_results.py` to plot the delays in these files.
