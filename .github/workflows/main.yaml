@@ -22,3 +22,7 @@ jobs:
       - name: Determine Version
         id: version_step
         uses: gittools/actions/gitversion/execute@v3.2.1
+
+      - name: Interact with version
+        run: |
+          echo "${{ steps.version_step.outputs.MajorMinorPatch }}"
