@@ -3,10 +3,14 @@ name: CI
 on:
   push:
     branches:
-      - feature/versioning
+      - main
+      - develop
+      - release/*
+      - hotfix/*
+      - feature/*
 
 jobs:
-  details:
+  versioning:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -19,10 +23,10 @@ jobs:
         with:
           versionSpec: '6.3.x'
 
-      - name: Determine Version
+      - name: Run GitVersion
         id: version_step
         uses: gittools/actions/gitversion/execute@v3.2.1
 
       - name: Interact with version
         run: |
-          echo "${{ steps.version_step.outputs.MajorMinorPatch }}"
+          echo "${{ steps.version_step.outputs.SemVer }}"
